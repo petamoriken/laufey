@@ -1757,7 +1757,7 @@ pub struct WindowState {
   pub last_press_time: Mutex<Option<std::time::Instant>>,
   pub last_press_button: Mutex<Option<winit::event::MouseButton>>,
   pub click_count: Mutex<i32>,
-  /// Allowed by default so CJK composition matches WebView / CEF.
+  /// Off by default (winit's default). Call `set_ime_allowed(true)` for CJK.
   pub ime_allowed: Mutex<bool>,
   /// Logical client rect last passed to `set_ime_cursor_area`.
   pub ime_cursor_area: Mutex<Option<(f64, f64, f64, f64)>>,
@@ -1781,7 +1781,7 @@ impl WindowState {
       last_press_time: Mutex::new(None),
       last_press_button: Mutex::new(None),
       click_count: Mutex::new(0),
-      ime_allowed: Mutex::new(true),
+      ime_allowed: Mutex::new(false),
       ime_cursor_area: Mutex::new(None),
     }
   }

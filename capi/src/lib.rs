@@ -1470,9 +1470,9 @@ impl Window {
     }
   }
 
-  /// Allow or deny IME on this window. Allowed by default. Can be toggled
-  /// at any time. No-op on backends where the engine owns composition
-  /// (WebView / CEF).
+  /// Allow or deny IME on this window. Off by default (winit's default);
+  /// pass `true` when a text field is focused. Can be toggled at any time.
+  /// No-op on backends where the engine owns composition (WebView / CEF).
   pub fn set_ime_allowed(&self, allowed: bool) {
     let api = api();
     if let Some(f) = api.set_ime_allowed {

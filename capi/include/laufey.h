@@ -844,11 +844,11 @@ struct laufey_backend_api {
 
   // --- IME (API >= 35) -------------------------------------------------------
   //
-  // Allow or deny IME on the window. Allowed by default so CJK composition
-  // works the same as on WebView / CEF. Pass false to opt out (games that
-  // want raw keys). A live setter that can be toggled at any time. WebView
-  // and CEF leave this a no-op — the engine owns composition. NULL on
-  // backends older than API version 35; callers must null-check.
+  // Allow or deny IME on the window. Off by default (matches winit); pass
+  // true when a text field is focused so CJK composition can start. A live
+  // setter that can be toggled at any time. WebView and CEF leave this a
+  // no-op — the engine owns composition. NULL on backends older than API
+  // version 35; callers must null-check.
   void (*set_ime_allowed)(void* backend_data, uint32_t window_id,
                           bool allowed);
 
