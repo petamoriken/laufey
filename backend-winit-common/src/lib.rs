@@ -76,6 +76,12 @@ pub type LaufeyKeyboardEventFn = unsafe extern "C" fn(
   u32,           // modifiers
   bool,          // repeat
 );
+pub type LaufeyImeEventFn = unsafe extern "C" fn(
+  *mut c_void,   // user_data
+  u32,           // window_id
+  c_int,         // type (0=start, 1=update, 2=end)
+  *const c_char, // data
+);
 pub type LaufeyMouseMoveFn = unsafe extern "C" fn(
   *mut c_void, // user_data
   u32,         // window_id
@@ -570,6 +576,9 @@ pub struct LaufeyBackendApi {
   pub set_ime_allowed: Option<unsafe extern "C" fn(*mut c_void, u32, bool)>,
   pub set_ime_cursor_area:
     Option<unsafe extern "C" fn(*mut c_void, u32, f64, f64, f64, f64)>,
+  pub set_ime_event_handler: Option<
+    unsafe extern "C" fn(*mut c_void, Option<LaufeyImeEventFn>, *mut c_void),
+  >,
 }
 
 unsafe impl Send for LaufeyBackendApi {}
@@ -1215,6 +1224,7 @@ pub fn create_api_base() -> LaufeyBackendApi {
     // IME (API >= 35): filled by fill_common_api.
     set_ime_allowed: None,
     set_ime_cursor_area: None,
+    set_ime_event_handler: None,
   }
 }
 
@@ -1761,6 +1771,10 @@ pub struct WindowState {
   pub ime_allowed: Mutex<bool>,
   /// Logical client rect last passed to `set_ime_cursor_area`.
   pub ime_cursor_area: Mutex<Option<(f64, f64, f64, f64)>>,
+  /// True between the first `Preedit`/`Commit` and the matching `Commit` or
+  /// `Disabled`. Used so we emit a single compositionstart and so
+  /// `Disabled` can cancel an in-flight session.
+  pub ime_composing: Mutex<bool>,
 }
 
 impl WindowState {
@@ -1783,6 +1797,7 @@ impl WindowState {
       click_count: Mutex::new(0),
       ime_allowed: Mutex::new(false),
       ime_cursor_area: Mutex::new(None),
+      ime_composing: Mutex::new(false),
     }
   }
 }
@@ -1797,6 +1812,7 @@ impl Default for WindowState {
 
 pub struct EventHandlers {
   pub keyboard_handler: Mutex<Option<(LaufeyKeyboardEventFn, usize)>>,
+  pub ime_handler: Mutex<Option<(LaufeyImeEventFn, usize)>>,
   pub mouse_click_handler: Mutex<Option<(LaufeyMouseClickFn, usize)>>,
   pub mouse_move_handler: Mutex<Option<(LaufeyMouseMoveFn, usize)>>,
   pub wheel_handler: Mutex<Option<(LaufeyWheelFn, usize)>>,
@@ -1812,6 +1828,7 @@ impl EventHandlers {
   pub fn new() -> Self {
     Self {
       keyboard_handler: Mutex::new(None),
+      ime_handler: Mutex::new(None),
       mouse_click_handler: Mutex::new(None),
       mouse_move_handler: Mutex::new(None),
       wheel_handler: Mutex::new(None),
@@ -2313,6 +2330,17 @@ macro_rules! define_common_backend_fns {
     ) {
       if let Some(state) = <$B as $crate::BackendAccess>::get() {
         *state.common().handlers.keyboard_handler.lock().unwrap() =
+          handler.map(|h| (h, user_data as usize));
+      }
+    }
+
+    unsafe extern "C" fn backend_set_ime_event_handler(
+      _data: *mut ::std::ffi::c_void,
+      handler: Option<$crate::LaufeyImeEventFn>,
+      user_data: *mut ::std::ffi::c_void,
+    ) {
+      if let Some(state) = <$B as $crate::BackendAccess>::get() {
+        *state.common().handlers.ime_handler.lock().unwrap() =
           handler.map(|h| (h, user_data as usize));
       }
     }
@@ -2964,6 +2992,7 @@ macro_rules! fill_common_api {
     $api.get_display_handle = Some($crate::backend_get_display_handle);
     $api.get_window_handle_type = Some($crate::backend_get_window_handle_type);
     $api.set_keyboard_event_handler = Some(backend_set_keyboard_event_handler);
+    $api.set_ime_event_handler = Some(backend_set_ime_event_handler);
     $api.set_mouse_click_handler = Some(backend_set_mouse_click_handler);
     $api.set_mouse_move_handler = Some(backend_set_mouse_move_handler);
     $api.set_wheel_handler = Some(backend_set_wheel_handler);
@@ -3606,6 +3635,10 @@ pub const LAUFEY_MOD_META: u32 = 1 << 3;
 pub const LAUFEY_KEY_PRESSED: c_int = 0;
 pub const LAUFEY_KEY_RELEASED: c_int = 1;
 
+pub const LAUFEY_IME_START: c_int = 0;
+pub const LAUFEY_IME_UPDATE: c_int = 1;
+pub const LAUFEY_IME_END: c_int = 2;
+
 pub const LAUFEY_MOUSE_BUTTON_LEFT: c_int = 0;
 pub const LAUFEY_MOUSE_BUTTON_RIGHT: c_int = 1;
 pub const LAUFEY_MOUSE_BUTTON_MIDDLE: c_int = 2;
@@ -3654,6 +3687,74 @@ pub fn winit_code_to_string(physical: &winit::keyboard::PhysicalKey) -> String {
   match physical {
     winit::keyboard::PhysicalKey::Code(code) => format!("{code:?}"),
     winit::keyboard::PhysicalKey::Unidentified(_) => "Unidentified".to_string(),
+  }
+}
+
+/// Translate a winit `Ime` event into zero or more (type, data) pairs and
+/// the resulting composing flag. `Enabled` is a capability signal, not a
+/// composition session — `compositionstart` fires on the first `Preedit`
+/// or `Commit`.
+pub fn ime_to_events(
+  ime: &winit::event::Ime,
+  composing: bool,
+) -> (Vec<(c_int, String)>, bool) {
+  match ime {
+    winit::event::Ime::Enabled => (vec![], composing),
+    winit::event::Ime::Preedit(text, _) => {
+      let mut events = Vec::new();
+      let mut now = composing;
+      if !now {
+        events.push((LAUFEY_IME_START, String::new()));
+        now = true;
+      }
+      events.push((LAUFEY_IME_UPDATE, text.clone()));
+      (events, now)
+    }
+    winit::event::Ime::Commit(text) => {
+      let mut events = Vec::new();
+      if !composing {
+        events.push((LAUFEY_IME_START, String::new()));
+      }
+      events.push((LAUFEY_IME_END, text.clone()));
+      (events, false)
+    }
+    winit::event::Ime::Disabled => {
+      if composing {
+        (vec![(LAUFEY_IME_END, String::new())], false)
+      } else {
+        (vec![], false)
+      }
+    }
+  }
+}
+
+fn fire_ime_event(
+  handlers: &EventHandlers,
+  window_id: u32,
+  ty: c_int,
+  data: &str,
+) {
+  let handler = handlers.ime_handler.lock().unwrap();
+  if let Some((cb, user_data)) = *handler {
+    let c_data = CString::new(data).unwrap_or_default();
+    unsafe {
+      cb(user_data as *mut c_void, window_id, ty, c_data.as_ptr());
+    }
+  }
+}
+
+/// Dispatch a winit IME event as W3C composition events.
+pub fn dispatch_ime_event(
+  handlers: &EventHandlers,
+  ws: &WindowState,
+  window_id: u32,
+  ime: &winit::event::Ime,
+) {
+  let composing = *ws.ime_composing.lock().unwrap();
+  let (events, now_composing) = ime_to_events(ime, composing);
+  *ws.ime_composing.lock().unwrap() = now_composing;
+  for (ty, data) in events {
+    fire_ime_event(handlers, window_id, ty, &data);
   }
 }
 
@@ -4031,5 +4132,77 @@ pub fn load_and_start_runtime(api: LaufeyBackendApi) {
       println!("No runtime library found. Set LAUFEY_RUNTIME_PATH or place libruntime in current directory.");
       println!("Starting without runtime integration...");
     }
+  }
+}
+
+#[cfg(test)]
+mod ime_tests {
+  use super::*;
+  use winit::event::Ime;
+
+  fn types_of(ime: Ime, composing: bool) -> (Vec<c_int>, bool) {
+    let (events, now) = ime_to_events(&ime, composing);
+    (events.into_iter().map(|(ty, _)| ty).collect(), now)
+  }
+
+  #[test]
+  fn enabled_is_not_a_composition_session() {
+    let (types, now) = types_of(Ime::Enabled, false);
+    assert!(types.is_empty());
+    assert!(!now);
+  }
+
+  #[test]
+  fn first_preedit_starts_then_updates() {
+    let (events, now) = ime_to_events(&Ime::Preedit("あ".into(), None), false);
+    assert_eq!(
+      events,
+      vec![
+        (LAUFEY_IME_START, String::new()),
+        (LAUFEY_IME_UPDATE, "あ".into()),
+      ]
+    );
+    assert!(now);
+  }
+
+  #[test]
+  fn subsequent_preedit_is_update_only() {
+    let (events, now) = ime_to_events(&Ime::Preedit("あい".into(), None), true);
+    assert_eq!(events, vec![(LAUFEY_IME_UPDATE, "あい".into())]);
+    assert!(now);
+  }
+
+  #[test]
+  fn commit_while_composing_ends() {
+    let (events, now) = ime_to_events(&Ime::Commit("愛".into()), true);
+    assert_eq!(events, vec![(LAUFEY_IME_END, "愛".into())]);
+    assert!(!now);
+  }
+
+  #[test]
+  fn commit_without_preedit_starts_then_ends() {
+    let (events, now) = ime_to_events(&Ime::Commit("a".into()), false);
+    assert_eq!(
+      events,
+      vec![
+        (LAUFEY_IME_START, String::new()),
+        (LAUFEY_IME_END, "a".into()),
+      ]
+    );
+    assert!(!now);
+  }
+
+  #[test]
+  fn disabled_cancels_an_open_session() {
+    let (events, now) = ime_to_events(&Ime::Disabled, true);
+    assert_eq!(events, vec![(LAUFEY_IME_END, String::new())]);
+    assert!(!now);
+  }
+
+  #[test]
+  fn disabled_without_session_is_silent() {
+    let (types, now) = types_of(Ime::Disabled, false);
+    assert!(types.is_empty());
+    assert!(!now);
   }
 }

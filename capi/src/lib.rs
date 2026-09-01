@@ -21,6 +21,9 @@ mod ffi {
 mod keyboard;
 pub use keyboard::*;
 
+mod ime;
+pub use ime::*;
+
 mod mouse;
 pub use mouse::*;
 
@@ -1252,6 +1255,16 @@ impl Window {
     F: Fn(KeyboardEvent) + Send + Sync + 'static,
   {
     on_keyboard_event(self.id, handler);
+    self
+  }
+
+  /// Register a handler for IME composition events on this window.
+  /// Raw/winit only; no-op on backends where the engine owns composition.
+  pub fn on_ime_event<F>(self, handler: F) -> Self
+  where
+    F: Fn(ImeEvent) + Send + Sync + 'static,
+  {
+    on_ime_event(self.id, handler);
     self
   }
 
@@ -2708,6 +2721,10 @@ where
 
 pub const LAUFEY_KEY_PRESSED: i32 = 0;
 pub const LAUFEY_KEY_RELEASED: i32 = 1;
+
+pub const LAUFEY_IME_START: i32 = 0;
+pub const LAUFEY_IME_UPDATE: i32 = 1;
+pub const LAUFEY_IME_END: i32 = 2;
 
 pub const LAUFEY_MOD_SHIFT: u32 = 1 << 0;
 pub const LAUFEY_MOD_CONTROL: u32 = 1 << 1;

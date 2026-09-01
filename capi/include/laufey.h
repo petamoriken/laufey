@@ -99,6 +99,12 @@ typedef void (*laufey_menu_click_fn)(void* user_data, uint32_t window_id,
 #define LAUFEY_KEY_PRESSED 0
 #define LAUFEY_KEY_RELEASED 1
 
+// IME composition event type (API >= 35). Maps onto the W3C composition
+// event sequence: start → one or more updates → end.
+#define LAUFEY_IME_START 0
+#define LAUFEY_IME_UPDATE 1
+#define LAUFEY_IME_END 2
+
 // Keyboard modifier flags (bitmask)
 #define LAUFEY_MOD_SHIFT (1 << 0)
 #define LAUFEY_MOD_CONTROL (1 << 1)
@@ -251,6 +257,14 @@ typedef void (*laufey_keyboard_event_fn)(
         code,  // physical key code (W3C UI Events code, e.g. "KeyA", "Enter")
     uint32_t modifiers,  // bitmask of LAUFEY_MOD_* flags
     bool repeat);
+
+// Callback for IME composition events (API >= 35). `type` is
+// LAUFEY_IME_START / UPDATE / END. `data` is the current composition
+// string (empty on start, and empty on end when the session is
+// cancelled). Raw/winit only; WebView and CEF leave the setter NULL
+// because the engine owns composition.
+typedef void (*laufey_ime_event_fn)(void* user_data, uint32_t window_id,
+                                    int type, const char* data);
 
 // Callback for window close requested events. Registering this handler
 // (API >= 31) makes the backend WAIT: the window does not close on its own
@@ -858,6 +872,12 @@ struct laufey_backend_api {
   // NULL on backends older than API version 35; callers must null-check.
   void (*set_ime_cursor_area)(void* backend_data, uint32_t window_id, double x,
                               double y, double width, double height);
+
+  // Register a handler for IME composition events (global, receives
+  // window_id in the callback). Raw/winit only. NULL on backends older
+  // than API version 35 and on WebView / CEF; callers must null-check.
+  void (*set_ime_event_handler)(void* backend_data,
+                                laufey_ime_event_fn handler, void* user_data);
 };
 
 #ifdef __cplusplus

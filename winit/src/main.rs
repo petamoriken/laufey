@@ -398,7 +398,16 @@ impl ApplicationHandler<UserEvent> for App {
       WindowEvent::DroppedFile(_) => {}
       WindowEvent::HoveredFile(_) => {}
       WindowEvent::HoveredFileCancelled => {}
-      WindowEvent::Ime(_) => {}
+      WindowEvent::Ime(ref ime) => {
+        state.common.with_window(laufey_id, |ws| {
+          laufey_backend_winit_common::dispatch_ime_event(
+            &state.common.handlers,
+            ws,
+            laufey_id,
+            ime,
+          );
+        });
+      }
 
       WindowEvent::Touch(_)
       | WindowEvent::PinchGesture { .. }

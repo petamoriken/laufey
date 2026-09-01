@@ -7,6 +7,7 @@ lets the application observe or react to raw input.
 ```rust
 let win = Window::new(800, 600)
   .on_keyboard_event(|e| println!("{} {:?}", e.key, e.modifiers))
+  .on_ime_event(|e| println!("{:?} {}", e.state, e.data))
   .on_mouse_click(|e| println!("button {} at {},{}", e.button, e.x, e.y))
   .on_wheel(|e| println!("scroll {},{}", e.delta_x, e.delta_y))
   .on_cursor_enter_leave(|e| println!("entered: {}", e.entered))
@@ -19,3 +20,10 @@ cursor position, the active modifiers, and the click count. Each backend
 translates its own native event source — Chromium's event path under CEF,
 `NSEvent` on macOS, GDK on Linux, and the Win32 message loop on Windows — into
 this common shape, so the same handler works on every backend.
+
+IME composition is raw/winit only (WebView and CEF leave the handler unset
+because the engine owns composition). Call `set_ime_allowed(true)` when a text
+field is focused, then `on_ime_event` delivers the W3C sequence:
+`Start` (empty data) → one or more `Update`s with the preedit string → `End`
+with the committed string (empty if the session was cancelled). Keyboard
+events continue to fire during composition.
