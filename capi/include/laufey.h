@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define LAUFEY_API_VERSION 34
+#define LAUFEY_API_VERSION 35
 
 // Window handle types for get_window_handle_type
 #define LAUFEY_WINDOW_HANDLE_UNKNOWN 0
@@ -841,6 +841,23 @@ struct laufey_backend_api {
   // false if the id is unknown or the backend doesn't support forwarding.
   // NULL on backends older than API version 34.
   bool (*is_click_passthrough_forward)(void* backend_data, uint32_t window_id);
+
+  // --- IME (API >= 35) -------------------------------------------------------
+  //
+  // Allow or deny IME on the window. Allowed by default so CJK composition
+  // works the same as on WebView / CEF. Pass false to opt out (games that
+  // want raw keys). A live setter that can be toggled at any time. WebView
+  // and CEF leave this a no-op — the engine owns composition. NULL on
+  // backends older than API version 35; callers must null-check.
+  void (*set_ime_allowed)(void* backend_data, uint32_t window_id,
+                          bool allowed);
+
+  // Logical, top-left client rectangle the IME candidate window should sit
+  // next to and not obscure (typically the caret or an in-window field; it
+  // need not stay inside the window). WebView and CEF leave this a no-op.
+  // NULL on backends older than API version 35; callers must null-check.
+  void (*set_ime_cursor_area)(void* backend_data, uint32_t window_id, double x,
+                              double y, double width, double height);
 };
 
 #ifdef __cplusplus

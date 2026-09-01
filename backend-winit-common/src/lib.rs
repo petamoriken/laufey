@@ -33,7 +33,7 @@ use winit::window::{Window, WindowLevel};
 // Bumping this in lockstep with the capi is mandatory: the capi's `init_api`
 // rejects any backend whose reported `version` differs, and the vtable layout
 // below must match the `laufey_backend_api` struct as of this version.
-pub const LAUFEY_API_VERSION: u32 = 34;
+pub const LAUFEY_API_VERSION: u32 = 35;
 
 /// Creation-time window style flags (mirror `LAUFEY_WINDOW_FLAG_*` in laufey.h).
 pub const LAUFEY_WINDOW_FLAG_FRAMELESS: u32 = 1 << 0;
@@ -564,6 +564,12 @@ pub struct LaufeyBackendApi {
     Option<unsafe extern "C" fn(*mut c_void, u32, bool)>,
   pub is_click_passthrough_forward:
     Option<unsafe extern "C" fn(*mut c_void, u32) -> bool>,
+
+  // --- IME (API >= 35) ---
+  // Implemented via winit's `Window::set_ime_allowed` / `set_ime_cursor_area`.
+  pub set_ime_allowed: Option<unsafe extern "C" fn(*mut c_void, u32, bool)>,
+  pub set_ime_cursor_area:
+    Option<unsafe extern "C" fn(*mut c_void, u32, f64, f64, f64, f64)>,
 }
 
 unsafe impl Send for LaufeyBackendApi {}
@@ -1206,6 +1212,9 @@ pub fn create_api_base() -> LaufeyBackendApi {
     // observation API.
     set_click_passthrough_forward: None,
     is_click_passthrough_forward: None,
+    // IME (API >= 35): filled by fill_common_api.
+    set_ime_allowed: None,
+    set_ime_cursor_area: None,
   }
 }
 
@@ -1748,6 +1757,10 @@ pub struct WindowState {
   pub last_press_time: Mutex<Option<std::time::Instant>>,
   pub last_press_button: Mutex<Option<winit::event::MouseButton>>,
   pub click_count: Mutex<i32>,
+  /// Allowed by default so CJK composition matches WebView / CEF.
+  pub ime_allowed: Mutex<bool>,
+  /// Logical client rect last passed to `set_ime_cursor_area`.
+  pub ime_cursor_area: Mutex<Option<(f64, f64, f64, f64)>>,
 }
 
 impl WindowState {
@@ -1768,6 +1781,8 @@ impl WindowState {
       last_press_time: Mutex::new(None),
       last_press_button: Mutex::new(None),
       click_count: Mutex::new(0),
+      ime_allowed: Mutex::new(true),
+      ime_cursor_area: Mutex::new(None),
     }
   }
 }
@@ -1896,6 +1911,12 @@ pub enum CommonEvent {
     window_id: u32,
   },
   ShowContextMenu {
+    window_id: u32,
+  },
+  SetImeAllowed {
+    window_id: u32,
+  },
+  SetImeCursorArea {
     window_id: u32,
   },
   Quit,
@@ -2581,6 +2602,27 @@ macro_rules! define_common_backend_fns {
       }
     }
 
+    unsafe extern "C" fn backend_set_ime_allowed(
+      _data: *mut ::std::ffi::c_void,
+      window_id: u32,
+      allowed: bool,
+    ) {
+      let _ = $crate::request_set_ime_allowed::<$B>(window_id, allowed);
+    }
+
+    unsafe extern "C" fn backend_set_ime_cursor_area(
+      _data: *mut ::std::ffi::c_void,
+      window_id: u32,
+      x: f64,
+      y: f64,
+      width: f64,
+      height: f64,
+    ) {
+      let _ = $crate::request_set_ime_cursor_area::<$B>(
+        window_id, x, y, width, height,
+      );
+    }
+
     unsafe extern "C" fn backend_set_dock_badge(
       _data: *mut ::std::ffi::c_void,
       badge: *const ::std::ffi::c_char,
@@ -2936,6 +2978,8 @@ macro_rules! fill_common_api {
     $api.string_free = Some(backend_string_free);
     $api.set_application_menu = Some(backend_set_application_menu);
     $api.show_context_menu = Some(backend_show_context_menu);
+    $api.set_ime_allowed = Some(backend_set_ime_allowed);
+    $api.set_ime_cursor_area = Some(backend_set_ime_cursor_area);
     $api.set_dock_badge = Some(backend_set_dock_badge);
     $api.bounce_dock = Some(backend_bounce_dock);
     $api.set_dock_menu = Some(backend_set_dock_menu);
@@ -3154,6 +3198,22 @@ pub fn handle_common_event<B: BackendAccess>(
       }
       true
     }
+    CommonEvent::SetImeAllowed { window_id: eid } if *eid == window_id => {
+      if let Some(state) = B::get() {
+        state.common().with_window(window_id, |ws| {
+          apply_ime_state(window, ws);
+        });
+      }
+      true
+    }
+    CommonEvent::SetImeCursorArea { window_id: eid } if *eid == window_id => {
+      if let Some(state) = B::get() {
+        state.common().with_window(window_id, |ws| {
+          apply_ime_cursor_area(window, ws);
+        });
+      }
+      true
+    }
     CommonEvent::UiTask { task, data } => {
       unsafe { task(*data as *mut c_void) };
       true
@@ -3161,6 +3221,80 @@ pub fn handle_common_event<B: BackendAccess>(
     CommonEvent::Quit => false, // caller handles exit
     _ => false,
   }
+}
+
+pub fn request_set_ime_allowed<B: BackendAccess>(
+  window_id: u32,
+  allowed: bool,
+) -> bool {
+  let Some(state) = B::get() else {
+    return false;
+  };
+  if state
+    .common()
+    .with_window(window_id, |ws| {
+      *ws.ime_allowed.lock().unwrap() = allowed;
+    })
+    .is_none()
+  {
+    return false;
+  }
+  let _ = state
+    .proxy()
+    .send_event(B::common_event(CommonEvent::SetImeAllowed { window_id }));
+  true
+}
+
+pub fn request_set_ime_cursor_area<B: BackendAccess>(
+  window_id: u32,
+  x: f64,
+  y: f64,
+  width: f64,
+  height: f64,
+) -> bool {
+  let Some(state) = B::get() else {
+    return false;
+  };
+  if state
+    .common()
+    .with_window(window_id, |ws| {
+      *ws.ime_cursor_area.lock().unwrap() = Some((x, y, width, height));
+    })
+    .is_none()
+  {
+    return false;
+  }
+  let _ = state
+    .proxy()
+    .send_event(B::common_event(CommonEvent::SetImeCursorArea { window_id }));
+  true
+}
+
+pub fn apply_ime_state(window: &Window, ws: &WindowState) {
+  let allowed = *ws.ime_allowed.lock().unwrap();
+  window.set_ime_allowed(allowed);
+  if allowed {
+    apply_ime_cursor_area(window, ws);
+  }
+}
+
+pub fn apply_ime_cursor_area(window: &Window, ws: &WindowState) {
+  if !*ws.ime_allowed.lock().unwrap() {
+    return;
+  }
+  let (x, y, w, h) = match *ws.ime_cursor_area.lock().unwrap() {
+    Some(rect) => rect,
+    None => {
+      let physical = window.inner_size();
+      let logical = physical.to_logical::<f64>(window.scale_factor());
+      (0.0, 0.0, logical.width, logical.height)
+    }
+  };
+  if w <= 0.0 || h <= 0.0 {
+    return;
+  }
+  window
+    .set_ime_cursor_area(LogicalPosition::new(x, y), LogicalSize::new(w, h));
 }
 
 /// Apply pending state to window attributes before creation.
@@ -3224,6 +3358,7 @@ pub fn apply_pending_post_create(ws: &WindowState, window: &Window) {
   if *ws.pending_flags.lock().unwrap() & LAUFEY_WINDOW_FLAG_NO_ACTIVATE != 0 {
     window.set_window_level(WindowLevel::AlwaysOnTop);
   }
+  apply_ime_state(window, ws);
 }
 
 // --- Native dialog implementation ---

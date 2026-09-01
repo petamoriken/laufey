@@ -29,7 +29,7 @@ pub use mouse::*;
 /// (`github.com/denoland/laufey/releases/tag/v{VERSION}`).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub const LAUFEY_API_VERSION: u32 = 34;
+pub const LAUFEY_API_VERSION: u32 = 35;
 
 /// Creation-time window style flags for [`Window::new_with_options`].
 /// Mirror the `LAUFEY_WINDOW_FLAG_*` constants in `laufey.h`.
@@ -1467,6 +1467,26 @@ impl Window {
           std::ptr::null_mut(),
         );
       }
+    }
+  }
+
+  /// Allow or deny IME on this window. Allowed by default. Can be toggled
+  /// at any time. No-op on backends where the engine owns composition
+  /// (WebView / CEF).
+  pub fn set_ime_allowed(&self, allowed: bool) {
+    let api = api();
+    if let Some(f) = api.set_ime_allowed {
+      unsafe { f(api.backend_data, self.id, allowed) };
+    }
+  }
+
+  /// Set the IME candidate rectangle in logical, top-left client pixels —
+  /// the same space as [`Window::show_context_menu`]. No-op on backends
+  /// without a raw IME (WebView / CEF).
+  pub fn set_ime_cursor_area(&self, x: f64, y: f64, width: f64, height: f64) {
+    let api = api();
+    if let Some(f) = api.set_ime_cursor_area {
+      unsafe { f(api.backend_data, self.id, x, y, width, height) };
     }
   }
 

@@ -219,7 +219,9 @@ impl ApplicationHandler<UserEvent> for App {
             | CommonEvent::Hide { window_id }
             | CommonEvent::Focus { window_id }
             | CommonEvent::SetApplicationMenu { window_id }
-            | CommonEvent::ShowContextMenu { window_id } => *window_id,
+            | CommonEvent::ShowContextMenu { window_id }
+            | CommonEvent::SetImeAllowed { window_id }
+            | CommonEvent::SetImeCursorArea { window_id } => *window_id,
             _ => return,
           };
           if let Some(info) = self.windows.get(&wid) {
