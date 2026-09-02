@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define LAUFEY_API_VERSION 36
+#define LAUFEY_API_VERSION 35
 
 // Window handle types for get_window_handle_type
 #define LAUFEY_WINDOW_HANDLE_UNKNOWN 0
@@ -851,12 +851,12 @@ struct laufey_backend_api {
   // must null-check and treat NULL as 1.0.
   double (*get_window_scale_factor)(void* backend_data, uint32_t window_id);
 
-  // --- Content-view origin (API >= 36) ---------------------------------------
+  // --- Content-view origin (API >= 35) ---------------------------------------
   //
   // Top-left of the content view in the same DIP, top-left-origin screen
   // space as get_window_position. Differs from get_window_position by the
   // title-bar / frame chrome, so `inner + clientX/Y` is MouseEvent.screenX/Y.
-  // Writes 0,0 if the id is unknown. NULL on backends older than API 36;
+  // Writes 0,0 if the id is unknown. NULL on backends older than API 35;
   // callers must null-check and fall back to get_window_position.
   void (*get_window_inner_position)(void* backend_data, uint32_t window_id,
                                     int* x, int* y);

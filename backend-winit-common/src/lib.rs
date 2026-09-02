@@ -35,7 +35,7 @@ use winit::window::{Window, WindowLevel};
 // Bumping this in lockstep with the capi is mandatory: the capi's `init_api`
 // rejects any backend whose reported `version` differs, and the vtable layout
 // below must match the `laufey_backend_api` struct as of this version.
-pub const LAUFEY_API_VERSION: u32 = 36;
+pub const LAUFEY_API_VERSION: u32 = 35;
 
 /// Creation-time window style flags (mirror `LAUFEY_WINDOW_FLAG_*` in laufey.h).
 pub const LAUFEY_WINDOW_FLAG_FRAMELESS: u32 = 1 << 0;
@@ -571,7 +571,7 @@ pub struct LaufeyBackendApi {
   pub get_window_scale_factor:
     Option<unsafe extern "C" fn(*mut c_void, u32) -> f64>,
 
-  // --- Content-view origin (API >= 36) ---
+  // --- Content-view origin (API >= 35) ---
   pub get_window_inner_position:
     Option<unsafe extern "C" fn(*mut c_void, u32, *mut c_int, *mut c_int)>,
 }
@@ -1218,7 +1218,7 @@ pub fn create_api_base() -> LaufeyBackendApi {
     is_click_passthrough_forward: None,
     // Device pixel ratio (API >= 35): filled by fill_common_api.
     get_window_scale_factor: None,
-    // Content-view origin (API >= 36): filled by fill_common_api.
+    // Content-view origin (API >= 35): filled by fill_common_api.
     get_window_inner_position: None,
   }
 }
