@@ -860,16 +860,17 @@ struct laufey_backend_api {
   //
   // Allow or deny IME on the window. Off by default (matches winit); pass
   // true when a text field is focused so CJK composition can start. A live
-  // setter that can be toggled at any time. WebView and CEF leave this a
-  // no-op — the engine owns composition. NULL on backends older than API
-  // version 35; callers must null-check.
+  // setter that can be toggled at any time. Raw/winit only. WebView and CEF
+  // leave this NULL — the engine owns composition. NULL on backends older
+  // than API version 35; callers must null-check.
   void (*set_ime_allowed)(void* backend_data, uint32_t window_id,
                           bool allowed);
 
   // Logical, top-left client rectangle the IME candidate window should sit
   // next to and not obscure (typically the caret or an in-window field; it
-  // need not stay inside the window). WebView and CEF leave this a no-op.
-  // NULL on backends older than API version 35; callers must null-check.
+  // need not stay inside the window). Raw/winit only. WebView and CEF leave
+  // this NULL. NULL on backends older than API version 35; callers must
+  // null-check.
   void (*set_ime_cursor_area)(void* backend_data, uint32_t window_id, double x,
                               double y, double width, double height);
 

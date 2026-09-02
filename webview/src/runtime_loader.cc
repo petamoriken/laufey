@@ -473,24 +473,6 @@ static void Backend_ShowContextMenu(void* data, uint32_t window_id, int x,
   }
 }
 
-static void Backend_SetImeAllowed(void* data, uint32_t window_id,
-                                  bool allowed) {
-  RuntimeLoader* loader = static_cast<RuntimeLoader*>(data);
-  LaufeyBackend* backend = loader->GetBackend();
-  if (backend) {
-    backend->SetImeAllowed(window_id, allowed);
-  }
-}
-
-static void Backend_SetImeCursorArea(void* data, uint32_t window_id, double x,
-                                     double y, double width, double height) {
-  RuntimeLoader* loader = static_cast<RuntimeLoader*>(data);
-  LaufeyBackend* backend = loader->GetBackend();
-  if (backend) {
-    backend->SetImeCursorArea(window_id, x, y, width, height);
-  }
-}
-
 static void Backend_OpenDevTools(void* data, uint32_t window_id) {
   RuntimeLoader* loader = static_cast<RuntimeLoader*>(data);
   LaufeyBackend* backend = loader->GetBackend();
@@ -842,8 +824,6 @@ void RuntimeLoader::InitializeBackendApi() {
   backend_api_.set_js_call_notify = Backend_SetJsCallNotify;
   backend_api_.set_application_menu = Backend_SetApplicationMenu;
   backend_api_.show_context_menu = Backend_ShowContextMenu;
-  backend_api_.set_ime_allowed = Backend_SetImeAllowed;
-  backend_api_.set_ime_cursor_area = Backend_SetImeCursorArea;
   backend_api_.open_devtools = Backend_OpenDevTools;
   backend_api_.print_to_pdf = Backend_PrintToPdf;
   backend_api_.set_js_namespace = Backend_SetJsNamespace;

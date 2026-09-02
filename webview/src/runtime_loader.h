@@ -449,13 +449,6 @@ class LaufeyBackend {
                                laufey_menu_click_fn on_click,
                                void* on_click_data) = 0;
 
-  // IME (API >= 35). Default no-op; the engine owns composition. The raw
-  // backend overrides.
-  virtual void SetImeAllowed(uint32_t /*window_id*/, bool /*allowed*/) {}
-  virtual void SetImeCursorArea(uint32_t /*window_id*/, double /*x*/,
-                                double /*y*/, double /*width*/,
-                                double /*height*/) {}
-
   virtual void OpenDevTools(uint32_t window_id) = 0;
 
   // Render the window's current page to a PDF (API >= 32). The PDF bytes are
