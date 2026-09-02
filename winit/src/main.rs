@@ -6,11 +6,11 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 use laufey_backend_winit_common::{
-  BackendAccess, CommonEvent, CommonState, LaufeyBackendApi, LaufeyJsResultFn,
-  define_common_backend_fns, fill_common_api, winit,
+  define_common_backend_fns, fill_common_api, winit, BackendAccess,
+  CommonEvent, CommonState, LaufeyBackendApi, LaufeyJsResultFn,
 };
 use winit::application::ApplicationHandler;
-use winit::dpi::{PhysicalPosition, PhysicalSize};
+use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::WindowEvent;
 use winit::event_loop::{EventLoop, EventLoopProxy};
 use winit::keyboard::ModifiersState;
@@ -261,8 +261,13 @@ impl ApplicationHandler<UserEvent> for App {
       None => return,
     };
 
-    let modifiers = match self.windows.get_mut(&laufey_id) {
-      Some(info) => &mut info.modifiers,
+    // Scale before any mut borrow of `windows` (modifiers live next to Window).
+    let scale_factor = match self.windows.get(&laufey_id) {
+      Some(info) => info.window.scale_factor(),
+      None => return,
+    };
+    let modifiers = match self.windows.get(&laufey_id) {
+      Some(info) => info.modifiers,
       None => return,
     };
 
@@ -281,18 +286,28 @@ impl ApplicationHandler<UserEvent> for App {
         }
       }
       WindowEvent::Resized(PhysicalSize { width, height }) => {
+        let (width, height) =
+          laufey_backend_winit_common::physical_size_to_logical_i32(
+            width,
+            height,
+            scale_factor,
+          );
         state.common.with_window(laufey_id, |ws| {
-          *ws.current_size.lock().unwrap() =
-            Some((width as i32, height as i32));
+          *ws.current_size.lock().unwrap() = Some((width, height));
         });
         laufey_backend_winit_common::dispatch_resize_event(
           &state.common.handlers,
           laufey_id,
-          width as i32,
-          height as i32,
+          width,
+          height,
         );
       }
       WindowEvent::Moved(PhysicalPosition { x, y }) => {
+        let (x, y) = laufey_backend_winit_common::physical_pos_to_logical_i32(
+          x,
+          y,
+          scale_factor,
+        );
         state.common.with_window(laufey_id, |ws| {
           *ws.pending_position.lock().unwrap() = Some((x, y));
         });
@@ -304,7 +319,9 @@ impl ApplicationHandler<UserEvent> for App {
         );
       }
       WindowEvent::ModifiersChanged(new_modifiers) => {
-        *modifiers = new_modifiers.state();
+        if let Some(info) = self.windows.get_mut(&laufey_id) {
+          info.modifiers = new_modifiers.state();
+        }
       }
       WindowEvent::KeyboardInput {
         event: ref key_event,
@@ -314,15 +331,18 @@ impl ApplicationHandler<UserEvent> for App {
           &state.common.handlers,
           laufey_id,
           key_event,
-          *modifiers,
+          modifiers,
         );
       }
       WindowEvent::CursorMoved { position, .. } => {
+        let (x, y) = laufey_backend_winit_common::physical_pos_to_logical_f64(
+          position.x,
+          position.y,
+          scale_factor,
+        );
         let flush_enter = state
           .common
-          .with_window(laufey_id, |ws| {
-            ws.note_cursor_move(position.x, position.y)
-          })
+          .with_window(laufey_id, |ws| ws.note_cursor_move(x, y))
           .unwrap_or(false);
         if flush_enter {
           state.common.with_window(laufey_id, |ws| {
@@ -331,16 +351,16 @@ impl ApplicationHandler<UserEvent> for App {
               ws,
               laufey_id,
               true,
-              *modifiers,
+              modifiers,
             );
           });
         }
         laufey_backend_winit_common::dispatch_mouse_move_event(
           &state.common.handlers,
           laufey_id,
-          position.x,
-          position.y,
-          *modifiers,
+          x,
+          y,
+          modifiers,
         );
       }
       WindowEvent::MouseInput {
@@ -355,7 +375,7 @@ impl ApplicationHandler<UserEvent> for App {
             laufey_id,
             button_state,
             button,
-            *modifiers,
+            modifiers,
           );
         });
       }
@@ -366,7 +386,8 @@ impl ApplicationHandler<UserEvent> for App {
             ws,
             laufey_id,
             delta,
-            *modifiers,
+            modifiers,
+            scale_factor,
           );
         });
       }
@@ -378,7 +399,7 @@ impl ApplicationHandler<UserEvent> for App {
               ws,
               laufey_id,
               true,
-              *modifiers,
+              modifiers,
             );
           }
         });
@@ -391,7 +412,7 @@ impl ApplicationHandler<UserEvent> for App {
             ws,
             laufey_id,
             false,
-            *modifiers,
+            modifiers,
           );
         });
       }
@@ -406,6 +427,41 @@ impl ApplicationHandler<UserEvent> for App {
           laufey_id,
           focused,
         );
+      }
+      WindowEvent::ScaleFactorChanged {
+        scale_factor: new_scale,
+        mut inner_size_writer,
+      } => {
+        // Another monitor (or a DPI change) — keep the DIP size CEF / WebView
+        // keep. Physical pixels follow; a later `Resized` refreshes
+        // `current_size` with the new scale. Do not recompute logical from the
+        // still-old `inner_size()`, or a 2× → 1× move reports half the window.
+        let logical = state
+          .common
+          .with_window(laufey_id, |ws| *ws.current_size.lock().unwrap())
+          .flatten();
+        if let Some((w, h)) = logical {
+          let physical =
+            LogicalSize::new(w as f64, h as f64).to_physical(new_scale);
+          let _ = inner_size_writer.request_inner_size(physical);
+        } else if let Some(info) = self.windows.get(&laufey_id) {
+          let size = info.window.inner_size();
+          let (width, height) =
+            laufey_backend_winit_common::physical_size_to_logical_i32(
+              size.width,
+              size.height,
+              new_scale,
+            );
+          state.common.with_window(laufey_id, |ws| {
+            *ws.current_size.lock().unwrap() = Some((width, height));
+          });
+          laufey_backend_winit_common::dispatch_resize_event(
+            &state.common.handlers,
+            laufey_id,
+            width,
+            height,
+          );
+        }
       }
 
       WindowEvent::ThemeChanged(_) => {}
@@ -425,7 +481,6 @@ impl ApplicationHandler<UserEvent> for App {
       }
       WindowEvent::ActivationTokenDone { .. }
       | WindowEvent::AxisMotion { .. }
-      | WindowEvent::ScaleFactorChanged { .. }
       | WindowEvent::Occluded(_)
       | WindowEvent::RedrawRequested => {
         // wont implement

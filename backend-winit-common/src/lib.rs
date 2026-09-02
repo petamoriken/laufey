@@ -10,7 +10,7 @@ pub mod tray;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;
-use std::ffi::{CStr, CString, c_char, c_int, c_void};
+use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Condvar, Mutex};
@@ -23,7 +23,9 @@ use muda::MenuEvent;
 use raw_window_handle::{
   HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle,
 };
-use winit::dpi::{LogicalPosition, LogicalSize};
+use winit::dpi::{
+  LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize,
+};
 use winit::event_loop::EventLoopProxy;
 use winit::window::{Window, WindowLevel};
 
@@ -1728,11 +1730,12 @@ pub fn dispatch_menu_click_by_id(item_id: &str) -> bool {
 pub struct WindowState {
   pub pending_title: Mutex<Option<String>>,
   pub pending_size: Mutex<Option<(i32, i32)>>,
-  /// Authoritative current window size in physical pixels. Unlike
+  /// Authoritative current window size in logical (DIP) pixels. Unlike
   /// `pending_size` (a one-shot *requested* size that's consumed when applied),
   /// this tracks the window's real dimensions: seeded at creation from
-  /// `inner_size()` and refreshed on every resize. Backs `get_window_size` so
-  /// it never reports 0x0 (which produced a 0x0 wgpu surface).
+  /// `inner_size()` converted by `scale_factor`, and refreshed on every resize.
+  /// Backs `get_window_size` so it never reports 0x0 (which produced a 0x0 wgpu
+  /// surface) and matches CEF / WebView / `set_size`.
   pub current_size: Mutex<Option<(i32, i32)>>,
   pub pending_position: Mutex<Option<(i32, i32)>>,
   pub pending_resizable: Mutex<Option<bool>>,
@@ -2502,7 +2505,11 @@ macro_rules! define_common_backend_fns {
           }
         }
       }
-      if confirmed { 1 } else { 0 }
+      if confirmed {
+        1
+      } else {
+        0
+      }
     }
 
     unsafe extern "C" fn backend_string_free(
@@ -3194,6 +3201,50 @@ pub fn handle_common_event<B: BackendAccess>(
   }
 }
 
+/// Physical → DIP integers. CEF / WebView report points; `set_size` already
+/// takes `LogicalSize`.
+pub fn physical_size_to_logical_i32(
+  width: u32,
+  height: u32,
+  scale_factor: f64,
+) -> (i32, i32) {
+  let scale = if scale_factor > 0.0 {
+    scale_factor
+  } else {
+    1.0
+  };
+  let size = PhysicalSize::new(width, height).to_logical::<f64>(scale);
+  (size.width.round() as i32, size.height.round() as i32)
+}
+
+pub fn physical_pos_to_logical_i32(
+  x: i32,
+  y: i32,
+  scale_factor: f64,
+) -> (i32, i32) {
+  let scale = if scale_factor > 0.0 {
+    scale_factor
+  } else {
+    1.0
+  };
+  let pos = PhysicalPosition::new(x, y).to_logical::<f64>(scale);
+  (pos.x.round() as i32, pos.y.round() as i32)
+}
+
+pub fn physical_pos_to_logical_f64(
+  x: f64,
+  y: f64,
+  scale_factor: f64,
+) -> (f64, f64) {
+  let scale = if scale_factor > 0.0 {
+    scale_factor
+  } else {
+    1.0
+  };
+  let pos = PhysicalPosition::new(x, y).to_logical::<f64>(scale);
+  (pos.x, pos.y)
+}
+
 /// Apply pending state to window attributes before creation.
 pub fn apply_pending_attrs(
   ws: &WindowState,
@@ -3240,8 +3291,12 @@ pub fn apply_pending_post_create(ws: &WindowState, window: &Window) {
   // for presentation").
   let size = window.inner_size();
   if size.width > 0 && size.height > 0 {
-    *ws.current_size.lock().unwrap() =
-      Some((size.width as i32, size.height as i32));
+    let (w, h) = physical_size_to_logical_i32(
+      size.width,
+      size.height,
+      window.scale_factor(),
+    );
+    *ws.current_size.lock().unwrap() = Some((w, h));
   }
 
   if let Some(true) = *ws.pending_always_on_top.lock().unwrap() {
@@ -3710,13 +3765,15 @@ pub fn dispatch_mouse_move_event(
 /// *down*. Flip Y only; X already matches (positive = right).
 pub fn winit_scroll_to_dom(
   delta: winit::event::MouseScrollDelta,
+  scale_factor: f64,
 ) -> (f64, f64, i32) {
   match delta {
     winit::event::MouseScrollDelta::LineDelta(dx, dy) => {
       (dx as f64, -(dy as f64), LAUFEY_WHEEL_DELTA_LINE)
     }
     winit::event::MouseScrollDelta::PixelDelta(d) => {
-      (d.x, -d.y, LAUFEY_WHEEL_DELTA_PIXEL)
+      let (dx, dy) = physical_pos_to_logical_f64(d.x, d.y, scale_factor);
+      (dx, -dy, LAUFEY_WHEEL_DELTA_PIXEL)
     }
   }
 }
@@ -3727,10 +3784,12 @@ pub fn dispatch_wheel_event(
   window_id: u32,
   delta: winit::event::MouseScrollDelta,
   modifiers: winit::keyboard::ModifiersState,
+  scale_factor: f64,
 ) {
   let handler = handlers.wheel_handler.lock().unwrap();
   if let Some((cb, user_data)) = *handler {
-    let (delta_x, delta_y, delta_mode) = winit_scroll_to_dom(delta);
+    let (delta_x, delta_y, delta_mode) =
+      winit_scroll_to_dom(delta, scale_factor);
     let (x, y) = *ws.cursor_position.lock().unwrap();
     let mods = modifiers_to_laufey(modifiers);
     unsafe {
@@ -4110,23 +4169,54 @@ mod mouse_tests {
   #[test]
   fn line_scroll_maps_winit_up_to_dom_negative() {
     // winit LineDelta +Y is scroll up; DOM wants +Y for scroll down.
-    let (dx, dy, mode) =
-      winit_scroll_to_dom(winit::event::MouseScrollDelta::LineDelta(0.0, 3.0));
+    let (dx, dy, mode) = winit_scroll_to_dom(
+      winit::event::MouseScrollDelta::LineDelta(0.0, 3.0),
+      2.0,
+    );
     assert_eq!(dx, 0.0);
     assert_eq!(dy, -3.0);
     assert_eq!(mode, LAUFEY_WHEEL_DELTA_LINE);
-    let (_, down, _) =
-      winit_scroll_to_dom(winit::event::MouseScrollDelta::LineDelta(0.0, -3.0));
+    let (_, down, _) = winit_scroll_to_dom(
+      winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
+      2.0,
+    );
     assert_eq!(down, 3.0);
   }
 
   #[test]
   fn pixel_scroll_flips_y_only() {
-    let (dx, dy, mode) =
-      winit_scroll_to_dom(winit::event::MouseScrollDelta::PixelDelta(
+    let (dx, dy, mode) = winit_scroll_to_dom(
+      winit::event::MouseScrollDelta::PixelDelta(
         winit::dpi::PhysicalPosition { x: 4.0, y: 8.0 },
-      ));
+      ),
+      1.0,
+    );
     assert_eq!((dx, dy), (4.0, -8.0));
     assert_eq!(mode, LAUFEY_WHEEL_DELTA_PIXEL);
+  }
+
+  #[test]
+  fn pixel_scroll_divides_by_scale() {
+    let (dx, dy, mode) = winit_scroll_to_dom(
+      winit::event::MouseScrollDelta::PixelDelta(
+        winit::dpi::PhysicalPosition { x: 8.0, y: 16.0 },
+      ),
+      2.0,
+    );
+    assert_eq!((dx, dy), (4.0, -8.0));
+    assert_eq!(mode, LAUFEY_WHEEL_DELTA_PIXEL);
+  }
+
+  #[test]
+  fn physical_size_at_2x_is_constructor_logical() {
+    assert_eq!(physical_size_to_logical_i32(960, 640, 2.0), (480, 320));
+    assert_eq!(physical_size_to_logical_i32(960, 720, 1.5), (640, 480));
+    assert_eq!(physical_size_to_logical_i32(480, 320, 1.0), (480, 320));
+  }
+
+  #[test]
+  fn physical_cursor_at_2x_is_logical() {
+    assert_eq!(physical_pos_to_logical_f64(40.0, 40.0, 2.0), (20.0, 20.0));
+    assert_eq!(physical_pos_to_logical_i32(100, 200, 2.0), (50, 100));
   }
 }
