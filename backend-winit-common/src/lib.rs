@@ -1775,6 +1775,9 @@ pub struct WindowState {
   /// `Disabled`. Used so we emit a single compositionstart and so
   /// `Disabled` can cancel an in-flight session.
   pub ime_composing: Mutex<bool>,
+  /// Last keydown used to drop the extra press Japanese IMEs (e.g. Google
+  /// ひらがな) post for the same physical key.
+  pub last_key_echo: Mutex<Option<(String, String, std::time::Instant)>>,
 }
 
 impl WindowState {
@@ -1798,6 +1801,7 @@ impl WindowState {
       ime_allowed: Mutex::new(false),
       ime_cursor_area: Mutex::new(None),
       ime_composing: Mutex::new(false),
+      last_key_echo: Mutex::new(None),
     }
   }
 }
@@ -3758,9 +3762,41 @@ pub fn dispatch_ime_event(
   }
 }
 
+/// Google 日本語 IME (and similar) posts a second keyDown for the same
+/// physical key a few milliseconds after the first while the menu bar
+/// shows ひらがな. Drop that echo so the runtime sees one `keydown`.
+pub const IME_KEY_ECHO_WINDOW: std::time::Duration =
+  std::time::Duration::from_millis(40);
+
+pub fn is_ime_key_echo(
+  last: &mut Option<(String, String, std::time::Instant)>,
+  pressed: bool,
+  key: &str,
+  code: &str,
+  now: std::time::Instant,
+) -> bool {
+  if !pressed {
+    return false;
+  }
+  if let Some((prev_key, prev_code, t)) = last.as_ref() {
+    if now.duration_since(*t) < IME_KEY_ECHO_WINDOW {
+      let same_code =
+        !code.is_empty() && code != "Unidentified" && code == prev_code;
+      let same_key =
+        !key.is_empty() && key != "Unidentified" && key == prev_key;
+      if same_code || same_key {
+        return true;
+      }
+    }
+  }
+  *last = Some((key.to_string(), code.to_string(), now));
+  false
+}
+
 /// Dispatch a keyboard event to the registered handler.
 pub fn dispatch_keyboard_event(
   handlers: &EventHandlers,
+  ws: &WindowState,
   window_id: u32,
   key_event: &winit::event::KeyEvent,
   modifiers: winit::keyboard::ModifiersState,
@@ -3773,6 +3809,15 @@ pub fn dispatch_keyboard_event(
     };
     let key_str = winit_key_to_string(&key_event.logical_key);
     let code_str = winit_code_to_string(&key_event.physical_key);
+    if is_ime_key_echo(
+      &mut ws.last_key_echo.lock().unwrap(),
+      state == LAUFEY_KEY_PRESSED,
+      &key_str,
+      &code_str,
+      std::time::Instant::now(),
+    ) {
+      return;
+    }
     let mods = modifiers_to_laufey(modifiers);
 
     let c_key = std::ffi::CString::new(key_str).unwrap_or_default();
@@ -4197,6 +4242,42 @@ mod ime_tests {
     let (events, now) = ime_to_events(&Ime::Disabled, true);
     assert_eq!(events, vec![(LAUFEY_IME_END, String::new())]);
     assert!(!now);
+  }
+
+  #[test]
+  fn ime_key_echo_drops_the_second_a() {
+    let mut last = None;
+    let t0 = std::time::Instant::now();
+    assert!(!is_ime_key_echo(&mut last, true, "a", "KeyA", t0));
+    assert!(is_ime_key_echo(
+      &mut last,
+      true,
+      "a",
+      "KeyA",
+      t0 + std::time::Duration::from_millis(5),
+    ));
+  }
+
+  #[test]
+  fn ime_key_echo_keeps_a_later_real_press() {
+    let mut last = None;
+    let t0 = std::time::Instant::now();
+    assert!(!is_ime_key_echo(&mut last, true, "a", "KeyA", t0));
+    assert!(!is_ime_key_echo(
+      &mut last,
+      true,
+      "a",
+      "KeyA",
+      t0 + std::time::Duration::from_millis(80),
+    ));
+  }
+
+  #[test]
+  fn ime_key_echo_keeps_a_different_key() {
+    let mut last = None;
+    let t0 = std::time::Instant::now();
+    assert!(!is_ime_key_echo(&mut last, true, "a", "KeyA", t0));
+    assert!(!is_ime_key_echo(&mut last, true, "i", "KeyI", t0));
   }
 
   #[test]

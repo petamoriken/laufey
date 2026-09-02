@@ -312,12 +312,15 @@ impl ApplicationHandler<UserEvent> for App {
         event: ref key_event,
         ..
       } => {
-        laufey_backend_winit_common::dispatch_keyboard_event(
-          &state.common.handlers,
-          laufey_id,
-          key_event,
-          *modifiers,
-        );
+        state.common.with_window(laufey_id, |ws| {
+          laufey_backend_winit_common::dispatch_keyboard_event(
+            &state.common.handlers,
+            ws,
+            laufey_id,
+            key_event,
+            *modifiers,
+          );
+        });
       }
       WindowEvent::CursorMoved { position, .. } => {
         state.common.with_window(laufey_id, |ws| {

@@ -11,6 +11,7 @@
 #include <map>
 
 #include "laufey.h"
+#include "ime_key_echo.h"
 #include "scheme_exchange.h"
 #include "webview_value.h"
 
@@ -112,6 +113,10 @@ class RuntimeLoader {
                              const char* code, uint32_t modifiers,
                              bool repeat) {
     std::lock_guard<std::mutex> lock(keyboard_mutex_);
+    if (laufey_common::ConsumeImeKeyEcho(&ime_key_echo_[window_id], state, key,
+                                         code)) {
+      return;
+    }
     if (keyboard_handler_) {
       keyboard_handler_(keyboard_user_data_, window_id, state, key, code,
                         modifiers, repeat);
@@ -350,6 +355,7 @@ class RuntimeLoader {
   laufey_keyboard_event_fn keyboard_handler_ = nullptr;
   void* keyboard_user_data_ = nullptr;
   std::mutex keyboard_mutex_;
+  std::map<uint32_t, laufey_common::ImeKeyEcho> ime_key_echo_;
 
   laufey_ime_event_fn ime_handler_ = nullptr;
   void* ime_user_data_ = nullptr;

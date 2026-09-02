@@ -28,5 +28,6 @@ already compose inside the engine; they still forward `on_ime_event` so the
 runtime can see the session. `on_ime_event` delivers the W3C sequence:
 `Start` (empty data) → one or more `Update`s with the preedit string → `End`
 with the committed string (empty if the session was cancelled). Keyboard
-events continue to fire during composition. CEF on Linux does not yet
-observe IME.
+events continue to fire during composition. A second `keydown` that Japanese
+IMEs (e.g. Google ひらがな) post for the same physical key is dropped.
+CEF on Linux does not yet observe IME.
