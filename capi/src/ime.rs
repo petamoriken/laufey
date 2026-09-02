@@ -87,7 +87,7 @@ unsafe extern "C" fn ime_event_trampoline(
 }
 
 /// Register a handler for IME composition events on a specific window.
-/// Raw/winit only; no-op on backends where the engine owns composition.
+/// Observed like keyboard events; the engine still owns composition.
 pub fn on_ime_event<F>(window_id: u32, handler: F)
 where
   F: Fn(ImeEvent) + Send + Sync + 'static,

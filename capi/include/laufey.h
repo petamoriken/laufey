@@ -875,8 +875,12 @@ struct laufey_backend_api {
                               double y, double width, double height);
 
   // Register a handler for IME composition events (global, receives
-  // window_id in the callback). Raw/winit only. NULL on backends older
-  // than API version 35 and on WebView / CEF; callers must null-check.
+  // window_id in the callback). Observed the same way as keyboard events:
+  // the engine still owns composition; the handler is notified, the event
+  // is not consumed. Raw/winit implements this via winit IME. WebView and
+  // CEF observe the platform IM (NSTextInputClient / WM_IME_* /
+  // WebKitInputMethodContext). CEF on Linux currently has no observer.
+  // NULL on backends older than API version 35; callers must null-check.
   void (*set_ime_event_handler)(void* backend_data,
                                 laufey_ime_event_fn handler, void* user_data);
 };

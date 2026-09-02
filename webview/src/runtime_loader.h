@@ -118,6 +118,49 @@ class RuntimeLoader {
     }
   }
 
+  void SetImeEventHandler(laufey_ime_event_fn handler, void* user_data) {
+    std::lock_guard<std::mutex> lock(ime_mutex_);
+    ime_handler_ = handler;
+    ime_user_data_ = user_data;
+  }
+
+  void DispatchImeEvent(uint32_t window_id, int type, const char* data) {
+    std::lock_guard<std::mutex> lock(ime_mutex_);
+    if (ime_handler_) {
+      ime_handler_(ime_user_data_, window_id, type, data ? data : "");
+    }
+  }
+
+  // Observe an IME session the same way keyboard events are observed:
+  // the engine still owns composition; we just forward start/update/end.
+  void NoteImeState(uint32_t window_id, bool composing, const std::string& data) {
+    std::lock_guard<std::mutex> lock(ime_mutex_);
+    bool was = false;
+    auto it = ime_composing_.find(window_id);
+    if (it != ime_composing_.end()) {
+      was = it->second;
+    }
+    auto emit = [&](int type, const char* d) {
+      if (ime_handler_) {
+        ime_handler_(ime_user_data_, window_id, type, d);
+      }
+    };
+    if (!was && composing) {
+      emit(LAUFEY_IME_START, "");
+      emit(LAUFEY_IME_UPDATE, data.c_str());
+    } else if (was && composing) {
+      emit(LAUFEY_IME_UPDATE, data.c_str());
+    } else if (was && !composing) {
+      emit(LAUFEY_IME_END, data.c_str());
+    }
+    ime_composing_[window_id] = composing;
+  }
+
+  void ClearImeState(uint32_t window_id) {
+    std::lock_guard<std::mutex> lock(ime_mutex_);
+    ime_composing_.erase(window_id);
+  }
+
   void SetMouseClickHandler(laufey_mouse_click_fn handler, void* user_data) {
     std::lock_guard<std::mutex> lock(mouse_mutex_);
     mouse_click_handler_ = handler;
@@ -307,6 +350,11 @@ class RuntimeLoader {
   laufey_keyboard_event_fn keyboard_handler_ = nullptr;
   void* keyboard_user_data_ = nullptr;
   std::mutex keyboard_mutex_;
+
+  laufey_ime_event_fn ime_handler_ = nullptr;
+  void* ime_user_data_ = nullptr;
+  std::mutex ime_mutex_;
+  std::map<uint32_t, bool> ime_composing_;
 
   laufey_mouse_click_fn mouse_click_handler_ = nullptr;
   void* mouse_click_user_data_ = nullptr;

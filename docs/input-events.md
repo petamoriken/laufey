@@ -21,9 +21,12 @@ translates its own native event source — Chromium's event path under CEF,
 `NSEvent` on macOS, GDK on Linux, and the Win32 message loop on Windows — into
 this common shape, so the same handler works on every backend.
 
-IME composition is raw/winit only (WebView and CEF leave the handler unset
-because the engine owns composition). Call `set_ime_allowed(true)` when a text
-field is focused, then `on_ime_event` delivers the W3C sequence:
+IME composition is observed the same way as keyboard events: the handler
+runs, the event is not consumed. On raw/winit, call `set_ime_allowed(true)`
+when a text field is focused so composition can start. WebView and CEF
+already compose inside the engine; they still forward `on_ime_event` so the
+runtime can see the session. `on_ime_event` delivers the W3C sequence:
 `Start` (empty data) → one or more `Update`s with the preedit string → `End`
 with the committed string (empty if the session was cancelled). Keyboard
-events continue to fire during composition.
+events continue to fire during composition. CEF on Linux does not yet
+observe IME.

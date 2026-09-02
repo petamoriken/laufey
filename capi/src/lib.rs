@@ -1259,7 +1259,9 @@ impl Window {
   }
 
   /// Register a handler for IME composition events on this window.
-  /// Raw/winit only; no-op on backends where the engine owns composition.
+  /// Observed like keyboard events: the engine still owns composition;
+  /// the handler is notified and the event is not consumed. CEF on
+  /// Linux currently has no observer.
   pub fn on_ime_event<F>(self, handler: F) -> Self
   where
     F: Fn(ImeEvent) + Send + Sync + 'static,
