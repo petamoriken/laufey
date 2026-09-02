@@ -6,7 +6,7 @@ It defines the boundary between a **backend** (a native executable embedding a
 browser engine) and a **runtime** (a shared library holding the application
 logic). The backend implements the ABI; the runtime consumes it.
 
-`LAUFEY_API_VERSION` (currently `35`) versions the contract. The `version` field
+`LAUFEY_API_VERSION` (currently `36`) versions the contract. The `version` field
 on the API table lets a runtime detect the backend's vintage and avoid calling
 function pointers a backend predates (older backends leave new pointers `NULL`).
 
@@ -49,6 +49,7 @@ The pointers group into:
   `set_always_on_top`/`is_always_on_top`,
   `set_window_opacity`/`get_window_opacity` (whole-window alpha, API ≥ 28),
   `get_window_scale_factor` (`window.devicePixelRatio`, API ≥ 35),
+  `get_window_inner_position` (content-view origin, API ≥ 36),
   `show`/`hide`/`is_visible`, `focus`, `quit`, `post_ui_task`.
 - **Value marshalling** — the `value_*` family (below).
 - **JavaScript interop** — `set_js_call_handler`, `js_call_respond`,

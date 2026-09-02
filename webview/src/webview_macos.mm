@@ -65,6 +65,7 @@ class WKWebViewBackend : public LaufeyBackend {
   double GetWindowScaleFactor(uint32_t window_id) override;
   void SetWindowPosition(uint32_t window_id, int x, int y) override;
   void GetWindowPosition(uint32_t window_id, int* x, int* y) override;
+  void GetWindowInnerPosition(uint32_t window_id, int* x, int* y) override;
   void SetResizable(uint32_t window_id, bool resizable) override;
   bool IsResizable(uint32_t window_id) override;
   void SetAlwaysOnTop(uint32_t window_id, bool always_on_top) override;
@@ -1451,6 +1452,26 @@ void WKWebViewBackend::SetWindowPosition(uint32_t window_id, int x, int y) {
       }
     }
   });
+}
+
+void WKWebViewBackend::GetWindowInnerPosition(uint32_t window_id, int* x,
+                                              int* y) {
+  __block int px = 0, py = 0;
+  dispatch_sync(dispatch_get_main_queue(), ^{
+    std::lock_guard<std::mutex> lock(windows_mutex_);
+    auto* state = GetWindow(window_id);
+    if (state) {
+      NSRect content =
+          [state->window contentRectForFrameRect:[state->window frame]];
+      px = static_cast<int>(content.origin.x);
+      py = static_cast<int>(PrimaryScreenHeight() - content.origin.y -
+                            content.size.height);
+    }
+  });
+  if (x)
+    *x = px;
+  if (y)
+    *y = py;
 }
 
 void WKWebViewBackend::GetWindowPosition(uint32_t window_id, int* x, int* y) {

@@ -357,6 +357,7 @@ class WebKitGTKBackend : public LaufeyBackend {
   double GetWindowScaleFactor(uint32_t window_id) override;
   void SetWindowPosition(uint32_t window_id, int x, int y) override;
   void GetWindowPosition(uint32_t window_id, int* x, int* y) override;
+  void GetWindowInnerPosition(uint32_t window_id, int* x, int* y) override;
   void SetResizable(uint32_t window_id, bool resizable) override;
   bool IsResizable(uint32_t window_id) override;
   void SetAlwaysOnTop(uint32_t window_id, bool always_on_top) override;
@@ -982,6 +983,24 @@ void WebKitGTKBackend::SetWindowPosition(uint32_t window_id, int x, int y) {
       gtk_window_move(GTK_WINDOW(state->window), x, y);
     }
   });
+}
+
+void WebKitGTKBackend::GetWindowInnerPosition(uint32_t window_id, int* x,
+                                              int* y) {
+  int wx = 0, wy = 0;
+  gtk_invoke_sync([&] {
+    std::lock_guard<std::mutex> lock(windows_mutex_);
+    auto* state = GetWindow(window_id);
+    if (state && state->webview) {
+      GdkWindow* gw = gtk_widget_get_window(GTK_WIDGET(state->webview));
+      if (gw)
+        gdk_window_get_origin(gw, &wx, &wy);
+    }
+  });
+  if (x)
+    *x = wx;
+  if (y)
+    *y = wy;
 }
 
 void WebKitGTKBackend::GetWindowPosition(uint32_t window_id, int* x, int* y) {

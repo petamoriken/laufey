@@ -393,6 +393,11 @@ class LaufeyBackend {
   virtual double GetWindowScaleFactor(uint32_t /*window_id*/) { return 1.0; }
   virtual void SetWindowPosition(uint32_t window_id, int x, int y) = 0;
   virtual void GetWindowPosition(uint32_t window_id, int* x, int* y) = 0;
+  // Content-view origin in the same space as GetWindowPosition. Default is
+  // the frame origin (no chrome offset).
+  virtual void GetWindowInnerPosition(uint32_t window_id, int* x, int* y) {
+    GetWindowPosition(window_id, x, y);
+  }
   virtual void SetResizable(uint32_t window_id, bool resizable) = 0;
   virtual bool IsResizable(uint32_t window_id) = 0;
   virtual void SetAlwaysOnTop(uint32_t window_id, bool always_on_top) = 0;

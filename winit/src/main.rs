@@ -292,16 +292,35 @@ impl ApplicationHandler<UserEvent> for App {
             height,
             scale_factor,
           );
-        state.common.with_window(laufey_id, |ws| {
-          *ws.current_size.lock().unwrap() = Some((width, height));
-          *ws.current_scale.lock().unwrap() = scale_factor;
+        let inner = self.windows.get(&laufey_id).and_then(|info| {
+          info.window.inner_position().ok().map(|p| {
+            laufey_backend_winit_common::physical_pos_to_logical_i32(
+              p.x,
+              p.y,
+              scale_factor,
+            )
+          })
         });
-        laufey_backend_winit_common::dispatch_resize_event(
-          &state.common.handlers,
-          laufey_id,
-          width,
-          height,
-        );
+        let changed = state
+          .common
+          .with_window(laufey_id, |ws| {
+            let prev = *ws.current_size.lock().unwrap();
+            *ws.current_size.lock().unwrap() = Some((width, height));
+            *ws.current_scale.lock().unwrap() = scale_factor;
+            if let Some(inner) = inner {
+              *ws.current_inner_position.lock().unwrap() = Some(inner);
+            }
+            prev != Some((width, height))
+          })
+          .unwrap_or(true);
+        if changed {
+          laufey_backend_winit_common::dispatch_resize_event(
+            &state.common.handlers,
+            laufey_id,
+            width,
+            height,
+          );
+        }
       }
       WindowEvent::Moved(PhysicalPosition { x, y }) => {
         let (x, y) = laufey_backend_winit_common::physical_pos_to_logical_i32(
@@ -309,8 +328,20 @@ impl ApplicationHandler<UserEvent> for App {
           y,
           scale_factor,
         );
+        let inner = self.windows.get(&laufey_id).and_then(|info| {
+          info.window.inner_position().ok().map(|p| {
+            laufey_backend_winit_common::physical_pos_to_logical_i32(
+              p.x,
+              p.y,
+              scale_factor,
+            )
+          })
+        });
         state.common.with_window(laufey_id, |ws| {
           *ws.pending_position.lock().unwrap() = Some((x, y));
+          if let Some(inner) = inner {
+            *ws.current_inner_position.lock().unwrap() = Some(inner);
+          }
         });
         laufey_backend_winit_common::dispatch_move_event(
           &state.common.handlers,

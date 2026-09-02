@@ -311,6 +311,7 @@ class WebView2Backend : public LaufeyBackend {
   double GetWindowScaleFactor(uint32_t window_id) override;
   void SetWindowPosition(uint32_t window_id, int x, int y) override;
   void GetWindowPosition(uint32_t window_id, int* x, int* y) override;
+  void GetWindowInnerPosition(uint32_t window_id, int* x, int* y) override;
   void SetResizable(uint32_t window_id, bool resizable) override;
   bool IsResizable(uint32_t window_id) override;
   void SetAlwaysOnTop(uint32_t window_id, bool always_on_top) override;
@@ -1181,6 +1182,21 @@ void WebView2Backend::SetWindowPosition(uint32_t window_id, int x, int y) {
   auto* state = GetWindow(window_id);
   if (state) {
     SetWindowPos(state->hwnd, nullptr, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+  }
+}
+
+void WebView2Backend::GetWindowInnerPosition(uint32_t window_id, int* x,
+                                             int* y) {
+  std::lock_guard<std::recursive_mutex> lock(windows_mutex_);
+  auto* state = GetWindow(window_id);
+  if (!state)
+    return;
+  POINT pt = {0, 0};
+  if (ClientToScreen(state->hwnd, &pt)) {
+    if (x)
+      *x = pt.x;
+    if (y)
+      *y = pt.y;
   }
 }
 

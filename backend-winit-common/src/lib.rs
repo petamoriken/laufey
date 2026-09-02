@@ -35,7 +35,7 @@ use winit::window::{Window, WindowLevel};
 // Bumping this in lockstep with the capi is mandatory: the capi's `init_api`
 // rejects any backend whose reported `version` differs, and the vtable layout
 // below must match the `laufey_backend_api` struct as of this version.
-pub const LAUFEY_API_VERSION: u32 = 35;
+pub const LAUFEY_API_VERSION: u32 = 36;
 
 /// Creation-time window style flags (mirror `LAUFEY_WINDOW_FLAG_*` in laufey.h).
 pub const LAUFEY_WINDOW_FLAG_FRAMELESS: u32 = 1 << 0;
@@ -570,6 +570,10 @@ pub struct LaufeyBackendApi {
   // --- Device pixel ratio (API >= 35) ---
   pub get_window_scale_factor:
     Option<unsafe extern "C" fn(*mut c_void, u32) -> f64>,
+
+  // --- Content-view origin (API >= 36) ---
+  pub get_window_inner_position:
+    Option<unsafe extern "C" fn(*mut c_void, u32, *mut c_int, *mut c_int)>,
 }
 
 unsafe impl Send for LaufeyBackendApi {}
@@ -1214,6 +1218,8 @@ pub fn create_api_base() -> LaufeyBackendApi {
     is_click_passthrough_forward: None,
     // Device pixel ratio (API >= 35): filled by fill_common_api.
     get_window_scale_factor: None,
+    // Content-view origin (API >= 36): filled by fill_common_api.
+    get_window_inner_position: None,
   }
 }
 
@@ -1746,6 +1752,9 @@ pub struct WindowState {
   /// `window.scale_factor()`, seeded at create and refreshed on
   /// `ScaleFactorChanged`. Backs `get_window_scale_factor`.
   pub current_scale: Mutex<f64>,
+  /// Content-view top-left in screen DIP. `getPosition` is the frame;
+  /// this plus `clientX`/`clientY` is `MouseEvent.screenX`/`screenY`.
+  pub current_inner_position: Mutex<Option<(i32, i32)>>,
   pub pending_position: Mutex<Option<(i32, i32)>>,
   pub pending_resizable: Mutex<Option<bool>>,
   pub pending_always_on_top: Mutex<Option<bool>>,
@@ -1774,7 +1783,8 @@ impl WindowState {
       pending_title: Mutex::new(None),
       pending_size: Mutex::new(None),
       current_size: Mutex::new(None),
-      current_scale: Mutex::new(1.0),
+      current_scale: Mutex::new(primary_scale_hint()),
+      current_inner_position: Mutex::new(None),
       pending_position: Mutex::new(None),
       pending_resizable: Mutex::new(None),
       pending_always_on_top: Mutex::new(None),
@@ -2128,6 +2138,33 @@ macro_rules! define_common_backend_fns {
         }
       }
       1.0
+    }
+
+    unsafe extern "C" fn backend_get_window_inner_position(
+      _data: *mut ::std::ffi::c_void,
+      window_id: u32,
+      x: *mut ::std::ffi::c_int,
+      y: *mut ::std::ffi::c_int,
+    ) {
+      let mut px = 0;
+      let mut py = 0;
+      if let Some(state) = <$B as $crate::BackendAccess>::get() {
+        let _ = state.common().with_window(window_id, |ws| {
+          if let Some((ix, iy)) = *ws.current_inner_position.lock().unwrap() {
+            px = ix;
+            py = iy;
+          } else if let Some((ox, oy)) = *ws.pending_position.lock().unwrap() {
+            px = ox;
+            py = oy;
+          }
+        });
+      }
+      if !x.is_null() {
+        *x = px;
+      }
+      if !y.is_null() {
+        *y = py;
+      }
     }
 
     unsafe extern "C" fn backend_set_window_position(
@@ -2971,6 +3008,7 @@ macro_rules! fill_common_api {
     $api.set_window_size = Some(backend_set_window_size);
     $api.get_window_size = Some(backend_get_window_size);
     $api.get_window_scale_factor = Some(backend_get_window_scale_factor);
+    $api.get_window_inner_position = Some(backend_get_window_inner_position);
     $api.set_window_position = Some(backend_set_window_position);
     $api.get_window_position = Some(backend_get_window_position);
     $api.set_resizable = Some(backend_set_resizable);
@@ -3259,6 +3297,38 @@ pub fn physical_pos_to_logical_i32(
   (pos.x.round() as i32, pos.y.round() as i32)
 }
 
+/// Best-effort scale before the winit `Window` exists. JS may read
+/// `devicePixelRatio` from the constructor, which runs before `CreateWindow`
+/// is processed.
+pub fn primary_scale_hint() -> f64 {
+  #[cfg(target_os = "macos")]
+  {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+    let Some(cls) = AnyClass::get(c"NSScreen") else {
+      return 1.0;
+    };
+    let screen: Option<&AnyObject> = unsafe { msg_send![cls, mainScreen] };
+    let Some(screen) = screen else {
+      return 1.0;
+    };
+    let scale: f64 = unsafe { msg_send![screen, backingScaleFactor] };
+    return if scale > 0.0 { scale } else { 1.0 };
+  }
+  #[cfg(target_os = "windows")]
+  {
+    windows_sys::Win32::UI::HiDpi::GetDpiForSystem() as f64 / 96.0
+  }
+  #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+  {
+    std::env::var("GDK_SCALE")
+      .ok()
+      .and_then(|s| s.parse().ok())
+      .filter(|s: &f64| *s > 0.0)
+      .unwrap_or(1.0)
+  }
+}
+
 pub fn physical_pos_to_logical_f64(
   x: f64,
   y: f64,
@@ -3317,12 +3387,16 @@ pub fn apply_pending_post_create(ws: &WindowState, window: &Window) {
   // to arrive — reliable on X11, racy on Wayland — which left
   // `getNativeWindow()` handing wgpu a 0x0 surface ("surface is not configured
   // for presentation").
+  let scale = window.scale_factor();
   let size = window.inner_size();
   if size.width > 0 && size.height > 0 {
-    let scale = window.scale_factor();
     let (w, h) = physical_size_to_logical_i32(size.width, size.height, scale);
     *ws.current_size.lock().unwrap() = Some((w, h));
     *ws.current_scale.lock().unwrap() = scale;
+  }
+  if let Ok(inner) = window.inner_position() {
+    *ws.current_inner_position.lock().unwrap() =
+      Some(physical_pos_to_logical_i32(inner.x, inner.y, scale));
   }
 
   if let Some(true) = *ws.pending_always_on_top.lock().unwrap() {
@@ -4241,9 +4315,10 @@ mod mouse_tests {
   }
 
   #[test]
-  fn new_window_scale_defaults_to_1() {
+  fn new_window_scale_uses_primary_hint() {
     let ws = WindowState::new();
-    assert_eq!(*ws.current_scale.lock().unwrap(), 1.0);
+    assert_eq!(*ws.current_scale.lock().unwrap(), primary_scale_hint());
+    assert!(*ws.current_scale.lock().unwrap() > 0.0);
   }
 
   #[test]

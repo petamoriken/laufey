@@ -29,7 +29,7 @@ pub use mouse::*;
 /// (`github.com/denoland/laufey/releases/tag/v{VERSION}`).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub const LAUFEY_API_VERSION: u32 = 35;
+pub const LAUFEY_API_VERSION: u32 = 36;
 
 /// Creation-time window style flags for [`Window::new_with_options`].
 /// Mirror the `LAUFEY_WINDOW_FLAG_*` constants in `laufey.h`.
@@ -861,6 +861,20 @@ impl Window {
       unsafe { f(api.backend_data, self.id, &mut x, &mut y) };
     }
     (x, y)
+  }
+
+  /// Top-left of the content view in screen DIP. Falls back to
+  /// [`Window::get_position`] when the backend does not report it.
+  pub fn get_inner_position(&self) -> (i32, i32) {
+    let api = api();
+    if let Some(f) = api.get_window_inner_position {
+      let mut x: c_int = 0;
+      let mut y: c_int = 0;
+      unsafe { f(api.backend_data, self.id, &mut x, &mut y) };
+      (x, y)
+    } else {
+      self.get_position()
+    }
   }
 
   pub fn resizable(self, resizable: bool) -> Self {

@@ -174,6 +174,15 @@ static void Backend_GetWindowPosition(void* data, uint32_t window_id, int* x,
   }
 }
 
+static void Backend_GetWindowInnerPosition(void* data, uint32_t window_id,
+                                           int* x, int* y) {
+  RuntimeLoader* loader = static_cast<RuntimeLoader*>(data);
+  LaufeyBackend* backend = loader->GetBackend();
+  if (backend) {
+    backend->GetWindowInnerPosition(window_id, x, y);
+  }
+}
+
 static void Backend_SetResizable(void* data, uint32_t window_id,
                                  bool resizable) {
   RuntimeLoader* loader = static_cast<RuntimeLoader*>(data);
@@ -779,6 +788,7 @@ void RuntimeLoader::InitializeBackendApi() {
   backend_api_.get_window_size = Backend_GetWindowSize;
   backend_api_.set_window_position = Backend_SetWindowPosition;
   backend_api_.get_window_position = Backend_GetWindowPosition;
+  backend_api_.get_window_inner_position = Backend_GetWindowInnerPosition;
   backend_api_.set_resizable = Backend_SetResizable;
   backend_api_.is_resizable = Backend_IsResizable;
   backend_api_.set_always_on_top = Backend_SetAlwaysOnTop;
