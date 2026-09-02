@@ -3703,6 +3703,24 @@ pub fn dispatch_mouse_move_event(
   }
 }
 
+/// Map a winit scroll delta to DOM `WheelEvent` units.
+///
+/// winit / Cocoa report positive Y for scroll *up*. The Web `WheelEvent`
+/// contract (and GTK's webview backend here) uses positive Y for scroll
+/// *down*. Flip Y only; X already matches (positive = right).
+pub fn winit_scroll_to_dom(
+  delta: winit::event::MouseScrollDelta,
+) -> (f64, f64, i32) {
+  match delta {
+    winit::event::MouseScrollDelta::LineDelta(dx, dy) => {
+      (dx as f64, -(dy as f64), LAUFEY_WHEEL_DELTA_LINE)
+    }
+    winit::event::MouseScrollDelta::PixelDelta(d) => {
+      (d.x, -d.y, LAUFEY_WHEEL_DELTA_PIXEL)
+    }
+  }
+}
+
 pub fn dispatch_wheel_event(
   handlers: &EventHandlers,
   ws: &WindowState,
@@ -3712,14 +3730,7 @@ pub fn dispatch_wheel_event(
 ) {
   let handler = handlers.wheel_handler.lock().unwrap();
   if let Some((cb, user_data)) = *handler {
-    let (delta_x, delta_y, delta_mode) = match delta {
-      winit::event::MouseScrollDelta::LineDelta(dx, dy) => {
-        (dx as f64, dy as f64, LAUFEY_WHEEL_DELTA_LINE)
-      }
-      winit::event::MouseScrollDelta::PixelDelta(d) => {
-        (d.x, d.y, LAUFEY_WHEEL_DELTA_PIXEL)
-      }
-    };
+    let (delta_x, delta_y, delta_mode) = winit_scroll_to_dom(delta);
     let (x, y) = *ws.cursor_position.lock().unwrap();
     let mods = modifiers_to_laufey(modifiers);
     unsafe {
@@ -4094,5 +4105,28 @@ mod mouse_tests {
     ws.note_cursor_left();
     assert!(!ws.note_cursor_entered());
     assert!(ws.note_cursor_move(80.0, 20.0));
+  }
+
+  #[test]
+  fn line_scroll_maps_winit_up_to_dom_negative() {
+    // winit LineDelta +Y is scroll up; DOM wants +Y for scroll down.
+    let (dx, dy, mode) =
+      winit_scroll_to_dom(winit::event::MouseScrollDelta::LineDelta(0.0, 3.0));
+    assert_eq!(dx, 0.0);
+    assert_eq!(dy, -3.0);
+    assert_eq!(mode, LAUFEY_WHEEL_DELTA_LINE);
+    let (_, down, _) =
+      winit_scroll_to_dom(winit::event::MouseScrollDelta::LineDelta(0.0, -3.0));
+    assert_eq!(down, 3.0);
+  }
+
+  #[test]
+  fn pixel_scroll_flips_y_only() {
+    let (dx, dy, mode) =
+      winit_scroll_to_dom(winit::event::MouseScrollDelta::PixelDelta(
+        winit::dpi::PhysicalPosition { x: 4.0, y: 8.0 },
+      ));
+    assert_eq!((dx, dy), (4.0, -8.0));
+    assert_eq!(mode, LAUFEY_WHEEL_DELTA_PIXEL);
   }
 }
