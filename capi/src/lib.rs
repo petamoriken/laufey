@@ -29,7 +29,7 @@ pub use mouse::*;
 /// (`github.com/denoland/laufey/releases/tag/v{VERSION}`).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub const LAUFEY_API_VERSION: u32 = 34;
+pub const LAUFEY_API_VERSION: u32 = 35;
 
 /// Creation-time window style flags for [`Window::new_with_options`].
 /// Mirror the `LAUFEY_WINDOW_FLAG_*` constants in `laufey.h`.
@@ -828,6 +828,17 @@ impl Window {
       unsafe { f(api.backend_data, self.id, &mut width, &mut height) };
     }
     (width, height)
+  }
+
+  /// Physical pixels per DIP for this window (`window.devicePixelRatio`).
+  /// Returns `1.0` when the backend does not report a scale.
+  pub fn get_scale_factor(&self) -> f64 {
+    let api = api();
+    if let Some(f) = api.get_window_scale_factor {
+      unsafe { f(api.backend_data, self.id) }
+    } else {
+      1.0
+    }
   }
 
   pub fn position(self, x: i32, y: i32) -> Self {

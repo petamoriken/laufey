@@ -294,6 +294,7 @@ impl ApplicationHandler<UserEvent> for App {
           );
         state.common.with_window(laufey_id, |ws| {
           *ws.current_size.lock().unwrap() = Some((width, height));
+          *ws.current_scale.lock().unwrap() = scale_factor;
         });
         laufey_backend_winit_common::dispatch_resize_event(
           &state.common.handlers,
@@ -441,6 +442,9 @@ impl ApplicationHandler<UserEvent> for App {
           .with_window(laufey_id, |ws| *ws.current_size.lock().unwrap())
           .flatten();
         if let Some((w, h)) = logical {
+          state.common.with_window(laufey_id, |ws| {
+            *ws.current_scale.lock().unwrap() = new_scale;
+          });
           let physical =
             LogicalSize::new(w as f64, h as f64).to_physical(new_scale);
           let _ = inner_size_writer.request_inner_size(physical);
@@ -454,6 +458,7 @@ impl ApplicationHandler<UserEvent> for App {
             );
           state.common.with_window(laufey_id, |ws| {
             *ws.current_size.lock().unwrap() = Some((width, height));
+            *ws.current_scale.lock().unwrap() = new_scale;
           });
           laufey_backend_winit_common::dispatch_resize_event(
             &state.common.handlers,

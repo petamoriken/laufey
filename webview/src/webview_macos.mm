@@ -62,6 +62,7 @@ class WKWebViewBackend : public LaufeyBackend {
   void Quit() override;
   void SetWindowSize(uint32_t window_id, int width, int height) override;
   void GetWindowSize(uint32_t window_id, int* width, int* height) override;
+  double GetWindowScaleFactor(uint32_t window_id) override;
   void SetWindowPosition(uint32_t window_id, int x, int y) override;
   void GetWindowPosition(uint32_t window_id, int* x, int* y) override;
   void SetResizable(uint32_t window_id, bool resizable) override;
@@ -1403,6 +1404,18 @@ void WKWebViewBackend::SetWindowSize(uint32_t window_id, int width,
       }
     }
   });
+}
+
+double WKWebViewBackend::GetWindowScaleFactor(uint32_t window_id) {
+  __block double result = 1.0;
+  dispatch_sync(dispatch_get_main_queue(), ^{
+    std::lock_guard<std::mutex> lock(windows_mutex_);
+    auto* state = GetWindow(window_id);
+    if (state) {
+      result = (double)[state->window backingScaleFactor];
+    }
+  });
+  return result;
 }
 
 void WKWebViewBackend::GetWindowSize(uint32_t window_id, int* width,

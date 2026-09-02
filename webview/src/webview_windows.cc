@@ -308,6 +308,7 @@ class WebView2Backend : public LaufeyBackend {
   void Quit() override;
   void SetWindowSize(uint32_t window_id, int width, int height) override;
   void GetWindowSize(uint32_t window_id, int* width, int* height) override;
+  double GetWindowScaleFactor(uint32_t window_id) override;
   void SetWindowPosition(uint32_t window_id, int x, int y) override;
   void GetWindowPosition(uint32_t window_id, int* x, int* y) override;
   void SetResizable(uint32_t window_id, bool resizable) override;
@@ -1144,6 +1145,15 @@ void WebView2Backend::SetWindowSize(uint32_t window_id, int width, int height) {
     SetWindowPos(state->hwnd, nullptr, 0, 0, width, height,
                  SWP_NOMOVE | SWP_NOZORDER);
   }
+}
+
+double WebView2Backend::GetWindowScaleFactor(uint32_t window_id) {
+  std::lock_guard<std::recursive_mutex> lock(windows_mutex_);
+  auto* state = GetWindow(window_id);
+  if (!state)
+    return 1.0;
+  UINT dpi = GetDpiForWindow(state->hwnd);
+  return dpi > 0 ? dpi / 96.0 : 1.0;
 }
 
 void WebView2Backend::GetWindowSize(uint32_t window_id, int* width,

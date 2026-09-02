@@ -35,7 +35,7 @@ use winit::window::{Window, WindowLevel};
 // Bumping this in lockstep with the capi is mandatory: the capi's `init_api`
 // rejects any backend whose reported `version` differs, and the vtable layout
 // below must match the `laufey_backend_api` struct as of this version.
-pub const LAUFEY_API_VERSION: u32 = 34;
+pub const LAUFEY_API_VERSION: u32 = 35;
 
 /// Creation-time window style flags (mirror `LAUFEY_WINDOW_FLAG_*` in laufey.h).
 pub const LAUFEY_WINDOW_FLAG_FRAMELESS: u32 = 1 << 0;
@@ -566,6 +566,10 @@ pub struct LaufeyBackendApi {
     Option<unsafe extern "C" fn(*mut c_void, u32, bool)>,
   pub is_click_passthrough_forward:
     Option<unsafe extern "C" fn(*mut c_void, u32) -> bool>,
+
+  // --- Device pixel ratio (API >= 35) ---
+  pub get_window_scale_factor:
+    Option<unsafe extern "C" fn(*mut c_void, u32) -> f64>,
 }
 
 unsafe impl Send for LaufeyBackendApi {}
@@ -1208,6 +1212,8 @@ pub fn create_api_base() -> LaufeyBackendApi {
     // observation API.
     set_click_passthrough_forward: None,
     is_click_passthrough_forward: None,
+    // Device pixel ratio (API >= 35): filled by fill_common_api.
+    get_window_scale_factor: None,
   }
 }
 
@@ -1737,6 +1743,9 @@ pub struct WindowState {
   /// Backs `get_window_size` so it never reports 0x0 (which produced a 0x0 wgpu
   /// surface) and matches CEF / WebView / `set_size`.
   pub current_size: Mutex<Option<(i32, i32)>>,
+  /// `window.scale_factor()`, seeded at create and refreshed on
+  /// `ScaleFactorChanged`. Backs `get_window_scale_factor`.
+  pub current_scale: Mutex<f64>,
   pub pending_position: Mutex<Option<(i32, i32)>>,
   pub pending_resizable: Mutex<Option<bool>>,
   pub pending_always_on_top: Mutex<Option<bool>>,
@@ -1765,6 +1774,7 @@ impl WindowState {
       pending_title: Mutex::new(None),
       pending_size: Mutex::new(None),
       current_size: Mutex::new(None),
+      current_scale: Mutex::new(1.0),
       pending_position: Mutex::new(None),
       pending_resizable: Mutex::new(None),
       pending_always_on_top: Mutex::new(None),
@@ -2101,6 +2111,23 @@ macro_rules! define_common_backend_fns {
           *height = 0;
         }
       }
+    }
+
+    unsafe extern "C" fn backend_get_window_scale_factor(
+      _data: *mut ::std::ffi::c_void,
+      window_id: u32,
+    ) -> f64 {
+      if let Some(state) = <$B as $crate::BackendAccess>::get() {
+        if let Some(scale) = state
+          .common()
+          .with_window(window_id, |ws| *ws.current_scale.lock().unwrap())
+        {
+          if scale > 0.0 {
+            return scale;
+          }
+        }
+      }
+      1.0
     }
 
     unsafe extern "C" fn backend_set_window_position(
@@ -2943,6 +2970,7 @@ macro_rules! fill_common_api {
     $api.quit = Some(backend_quit);
     $api.set_window_size = Some(backend_set_window_size);
     $api.get_window_size = Some(backend_get_window_size);
+    $api.get_window_scale_factor = Some(backend_get_window_scale_factor);
     $api.set_window_position = Some(backend_set_window_position);
     $api.get_window_position = Some(backend_get_window_position);
     $api.set_resizable = Some(backend_set_resizable);
@@ -3291,12 +3319,10 @@ pub fn apply_pending_post_create(ws: &WindowState, window: &Window) {
   // for presentation").
   let size = window.inner_size();
   if size.width > 0 && size.height > 0 {
-    let (w, h) = physical_size_to_logical_i32(
-      size.width,
-      size.height,
-      window.scale_factor(),
-    );
+    let scale = window.scale_factor();
+    let (w, h) = physical_size_to_logical_i32(size.width, size.height, scale);
     *ws.current_size.lock().unwrap() = Some((w, h));
+    *ws.current_scale.lock().unwrap() = scale;
   }
 
   if let Some(true) = *ws.pending_always_on_top.lock().unwrap() {
@@ -4212,6 +4238,12 @@ mod mouse_tests {
     assert_eq!(physical_size_to_logical_i32(960, 640, 2.0), (480, 320));
     assert_eq!(physical_size_to_logical_i32(960, 720, 1.5), (640, 480));
     assert_eq!(physical_size_to_logical_i32(480, 320, 1.0), (480, 320));
+  }
+
+  #[test]
+  fn new_window_scale_defaults_to_1() {
+    let ws = WindowState::new();
+    assert_eq!(*ws.current_scale.lock().unwrap(), 1.0);
   }
 
   #[test]

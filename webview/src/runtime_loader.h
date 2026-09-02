@@ -389,6 +389,8 @@ class LaufeyBackend {
                          laufey_js_result_fn callback, void* callback_data) = 0;
   virtual void SetWindowSize(uint32_t window_id, int width, int height) = 0;
   virtual void GetWindowSize(uint32_t window_id, int* width, int* height) = 0;
+  // Physical pixels per DIP (`window.devicePixelRatio`). Default 1.0.
+  virtual double GetWindowScaleFactor(uint32_t /*window_id*/) { return 1.0; }
   virtual void SetWindowPosition(uint32_t window_id, int x, int y) = 0;
   virtual void GetWindowPosition(uint32_t window_id, int* x, int* y) = 0;
   virtual void SetResizable(uint32_t window_id, bool resizable) = 0;

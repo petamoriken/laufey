@@ -354,6 +354,7 @@ class WebKitGTKBackend : public LaufeyBackend {
   void Quit() override;
   void SetWindowSize(uint32_t window_id, int width, int height) override;
   void GetWindowSize(uint32_t window_id, int* width, int* height) override;
+  double GetWindowScaleFactor(uint32_t window_id) override;
   void SetWindowPosition(uint32_t window_id, int x, int y) override;
   void GetWindowPosition(uint32_t window_id, int* x, int* y) override;
   void SetResizable(uint32_t window_id, bool resizable) override;
@@ -943,6 +944,18 @@ void WebKitGTKBackend::SetWindowSize(uint32_t window_id, int width,
       gtk_window_resize(GTK_WINDOW(state->window), width, height);
     }
   });
+}
+
+double WebKitGTKBackend::GetWindowScaleFactor(uint32_t window_id) {
+  int scale = 1;
+  gtk_invoke_sync([&] {
+    std::lock_guard<std::mutex> lock(windows_mutex_);
+    auto* state = GetWindow(window_id);
+    if (state) {
+      scale = gtk_widget_get_scale_factor(GTK_WIDGET(state->window));
+    }
+  });
+  return scale > 0 ? (double)scale : 1.0;
 }
 
 void WebKitGTKBackend::GetWindowSize(uint32_t window_id, int* width,
