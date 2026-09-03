@@ -205,8 +205,8 @@ class RuntimeLoader {
                              const char* code, uint32_t modifiers,
                              bool repeat) {
     std::lock_guard<std::mutex> lock(keyboard_mutex_);
-    if (laufey_common::ConsumeImeKeyEcho(&ime_key_echo_[window_id], state, key,
-                                         code)) {
+    if (laufey_common::ConsumeImeKeyEcho(&ime_key_echo_[window_id], state,
+                                         repeat, code)) {
       return;
     }
     if (keyboard_handler_) {
