@@ -3335,9 +3335,6 @@ pub fn primary_scale_hint() -> f64 {
   }
 }
 
-/// Best-effort scale before the winit `Window` exists. JS may read
-/// `devicePixelRatio` from the constructor, which runs before `CreateWindow`
-/// is processed.
 #[cfg(target_os = "windows")]
 pub fn primary_scale_hint() -> f64 {
   let dpi = unsafe { windows_sys::Win32::UI::HiDpi::GetDpiForSystem() };
@@ -3348,10 +3345,7 @@ pub fn primary_scale_hint() -> f64 {
   }
 }
 
-/// Best-effort scale before the winit `Window` exists. JS may read
-/// `devicePixelRatio` from the constructor, which runs before `CreateWindow`
-/// is processed.
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "linux")]
 pub fn primary_scale_hint() -> f64 {
   std::env::var("GDK_SCALE")
     .ok()
@@ -3368,6 +3362,25 @@ pub fn primary_scale_hint() -> f64 {
 /// back to the frame origin reported a point on the title bar; ask the OS what
 /// the chrome will measure instead. `flags` are the creation-time
 /// `LAUFEY_WINDOW_FLAG_*` bits — a frameless window has no chrome to offset.
+#[cfg(target_os = "macos")]
+pub fn frame_offset_hint(flags: u32) -> (i32, i32) {
+  if flags & LAUFEY_WINDOW_FLAG_FRAMELESS != 0 {
+    return (0, 0);
+  }
+  use objc2_app_kit::{NSWindow, NSWindowStyleMask};
+  use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
+  let mtm = unsafe { MainThreadMarker::new_unchecked() };
+  let style = NSWindowStyleMask::Titled
+    | NSWindowStyleMask::Closable
+    | NSWindowStyleMask::Miniaturizable
+    | NSWindowStyleMask::Resizable;
+  let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(100.0, 100.0));
+  let content = NSWindow::contentRectForFrameRect_styleMask(frame, style, mtm);
+  let dx = (content.origin.x - frame.origin.x).round() as i32;
+  let dy = (frame.size.height - content.size.height).round() as i32;
+  (dx.max(0), dy.max(0))
+}
+
 #[cfg(target_os = "windows")]
 pub fn frame_offset_hint(flags: u32) -> (i32, i32) {
   if flags & LAUFEY_WINDOW_FLAG_FRAMELESS != 0 {
@@ -3408,45 +3421,9 @@ pub fn frame_offset_hint(flags: u32) -> (i32, i32) {
   physical_pos_to_logical_i32(-rect.left, -rect.top, scale)
 }
 
-/// Best-effort title-bar / border offset before the winit `Window` exists, in
-/// logical pixels.
-///
-/// `getInnerPosition()` is the content-view origin, but the window is created
-/// asynchronously and JS can read it straight after the constructor. Falling
-/// back to the frame origin reported a point on the title bar; ask the OS what
-/// the chrome will measure instead. `flags` are the creation-time
-/// `LAUFEY_WINDOW_FLAG_*` bits — a frameless window has no chrome to offset.
-#[cfg(target_os = "macos")]
-pub fn frame_offset_hint(flags: u32) -> (i32, i32) {
-  if flags & LAUFEY_WINDOW_FLAG_FRAMELESS != 0 {
-    return (0, 0);
-  }
-  use objc2_app_kit::{NSWindow, NSWindowStyleMask};
-  use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
-  let mtm = unsafe { MainThreadMarker::new_unchecked() };
-  let style = NSWindowStyleMask::Titled
-    | NSWindowStyleMask::Closable
-    | NSWindowStyleMask::Miniaturizable
-    | NSWindowStyleMask::Resizable;
-  let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(100.0, 100.0));
-  let content = NSWindow::contentRectForFrameRect_styleMask(frame, style, mtm);
-  let dx = (content.origin.x - frame.origin.x).round() as i32;
-  let dy = (frame.size.height - content.size.height).round() as i32;
-  (dx.max(0), dy.max(0))
-}
-
-/// Best-effort title-bar / border offset before the winit `Window` exists, in
-/// logical pixels.
-///
-/// `getInnerPosition()` is the content-view origin, but the window is created
-/// asynchronously and JS can read it straight after the constructor. Falling
-/// back to the frame origin reported a point on the title bar; ask the OS what
-/// the chrome will measure instead. `flags` are the creation-time
-/// `LAUFEY_WINDOW_FLAG_*` bits — a frameless window has no chrome to offset.
-///
-/// On Linux the frame offset is the compositor's business.
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(target_os = "linux")]
 pub fn frame_offset_hint(_flags: u32) -> (i32, i32) {
+  // The frame offset is the compositor's business.
   (0, 0)
 }
 
@@ -4099,6 +4076,16 @@ pub fn next_click_count(
 /// gets reported one position stale. Win32 button messages carry their own
 /// coordinates and browsers use those; the closest equivalent here is to ask
 /// the OS where the pointer is before dispatching.
+///
+/// No-op off Windows, where `CursorMoved` already arrives in order.
+#[cfg(target_os = "macos")]
+pub fn refresh_cursor_position(
+  _ws: &WindowState,
+  _window: &Window,
+  _scale_factor: f64,
+) {
+}
+
 #[cfg(target_os = "windows")]
 pub fn refresh_cursor_position(
   ws: &WindowState,
@@ -4130,8 +4117,7 @@ pub fn refresh_cursor_position(
   *ws.cursor_seen.lock().unwrap() = true;
 }
 
-/// No-op off Windows, where `CursorMoved` already arrives in order.
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 pub fn refresh_cursor_position(
   _ws: &WindowState,
   _window: &Window,
