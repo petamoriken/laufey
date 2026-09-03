@@ -3316,34 +3316,48 @@ pub fn physical_pos_to_logical_i32(
 /// Best-effort scale before the winit `Window` exists. JS may read
 /// `devicePixelRatio` from the constructor, which runs before `CreateWindow`
 /// is processed.
+#[cfg(target_os = "macos")]
 pub fn primary_scale_hint() -> f64 {
-  #[cfg(target_os = "macos")]
-  {
-    use objc2::msg_send;
-    use objc2::runtime::{AnyClass, AnyObject};
-    let Some(cls) = AnyClass::get(c"NSScreen") else {
-      return 1.0;
-    };
-    let screen: Option<&AnyObject> = unsafe { msg_send![cls, mainScreen] };
-    let Some(screen) = screen else {
-      return 1.0;
-    };
-    let scale: f64 = unsafe { msg_send![screen, backingScaleFactor] };
-    return if scale > 0.0 { scale } else { 1.0 };
+  use objc2::msg_send;
+  use objc2::runtime::{AnyClass, AnyObject};
+  let Some(cls) = AnyClass::get(c"NSScreen") else {
+    return 1.0;
+  };
+  let screen: Option<&AnyObject> = unsafe { msg_send![cls, mainScreen] };
+  let Some(screen) = screen else {
+    return 1.0;
+  };
+  let scale: f64 = unsafe { msg_send![screen, backingScaleFactor] };
+  if scale > 0.0 {
+    scale
+  } else {
+    1.0
   }
-  #[cfg(target_os = "windows")]
-  {
-    let dpi = unsafe { windows_sys::Win32::UI::HiDpi::GetDpiForSystem() };
-    return if dpi > 0 { dpi as f64 / 96.0 } else { 1.0 };
+}
+
+/// Best-effort scale before the winit `Window` exists. JS may read
+/// `devicePixelRatio` from the constructor, which runs before `CreateWindow`
+/// is processed.
+#[cfg(target_os = "windows")]
+pub fn primary_scale_hint() -> f64 {
+  let dpi = unsafe { windows_sys::Win32::UI::HiDpi::GetDpiForSystem() };
+  if dpi > 0 {
+    dpi as f64 / 96.0
+  } else {
+    1.0
   }
-  #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-  {
-    std::env::var("GDK_SCALE")
-      .ok()
-      .and_then(|s| s.parse().ok())
-      .filter(|s: &f64| *s > 0.0)
-      .unwrap_or(1.0)
-  }
+}
+
+/// Best-effort scale before the winit `Window` exists. JS may read
+/// `devicePixelRatio` from the constructor, which runs before `CreateWindow`
+/// is processed.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub fn primary_scale_hint() -> f64 {
+  std::env::var("GDK_SCALE")
+    .ok()
+    .and_then(|s| s.parse().ok())
+    .filter(|s: &f64| *s > 0.0)
+    .unwrap_or(1.0)
 }
 
 /// Best-effort title-bar / border offset before the winit `Window` exists, in
@@ -3354,67 +3368,86 @@ pub fn primary_scale_hint() -> f64 {
 /// back to the frame origin reported a point on the title bar; ask the OS what
 /// the chrome will measure instead. `flags` are the creation-time
 /// `LAUFEY_WINDOW_FLAG_*` bits — a frameless window has no chrome to offset.
+#[cfg(target_os = "windows")]
 pub fn frame_offset_hint(flags: u32) -> (i32, i32) {
   if flags & LAUFEY_WINDOW_FLAG_FRAMELESS != 0 {
     return (0, 0);
   }
-  #[cfg(target_os = "windows")]
-  {
-    use windows_sys::Win32::Foundation::RECT;
-    use windows_sys::Win32::UI::HiDpi::{
-      AdjustWindowRectExForDpi, GetDpiForSystem,
-    };
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-      WS_EX_WINDOWEDGE, WS_OVERLAPPEDWINDOW,
-    };
-    let dpi = unsafe { GetDpiForSystem() };
-    if dpi == 0 {
-      return (0, 0);
-    }
-    // Adjusting an empty client rect leaves the chrome thickness in the
-    // (now negative) left/top corner.
-    let mut rect = RECT {
-      left: 0,
-      top: 0,
-      right: 0,
-      bottom: 0,
-    };
-    let ok = unsafe {
-      AdjustWindowRectExForDpi(
-        &mut rect,
-        WS_OVERLAPPEDWINDOW,
-        0,
-        WS_EX_WINDOWEDGE,
-        dpi,
-      )
-    };
-    if ok == 0 {
-      return (0, 0);
-    }
-    let scale = dpi as f64 / 96.0;
-    return physical_pos_to_logical_i32(-rect.left, -rect.top, scale);
+  use windows_sys::Win32::Foundation::RECT;
+  use windows_sys::Win32::UI::HiDpi::{
+    AdjustWindowRectExForDpi, GetDpiForSystem,
+  };
+  use windows_sys::Win32::UI::WindowsAndMessaging::{
+    WS_EX_WINDOWEDGE, WS_OVERLAPPEDWINDOW,
+  };
+  let dpi = unsafe { GetDpiForSystem() };
+  if dpi == 0 {
+    return (0, 0);
   }
-  #[cfg(target_os = "macos")]
-  {
-    use objc2_app_kit::{NSWindow, NSWindowStyleMask};
-    use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
-    let mtm = unsafe { MainThreadMarker::new_unchecked() };
-    let style = NSWindowStyleMask::Titled
-      | NSWindowStyleMask::Closable
-      | NSWindowStyleMask::Miniaturizable
-      | NSWindowStyleMask::Resizable;
-    let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(100.0, 100.0));
-    let content =
-      NSWindow::contentRectForFrameRect_styleMask(frame, style, mtm);
-    let dx = (content.origin.x - frame.origin.x).round() as i32;
-    let dy = (frame.size.height - content.size.height).round() as i32;
-    return (dx.max(0), dy.max(0));
+  // Adjusting an empty client rect leaves the chrome thickness in the
+  // (now negative) left/top corner.
+  let mut rect = RECT {
+    left: 0,
+    top: 0,
+    right: 0,
+    bottom: 0,
+  };
+  let ok = unsafe {
+    AdjustWindowRectExForDpi(
+      &mut rect,
+      WS_OVERLAPPEDWINDOW,
+      0,
+      WS_EX_WINDOWEDGE,
+      dpi,
+    )
+  };
+  if ok == 0 {
+    return (0, 0);
   }
-  #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-  {
-    // On Linux the frame offset is the compositor's business.
-    (0, 0)
+  let scale = dpi as f64 / 96.0;
+  physical_pos_to_logical_i32(-rect.left, -rect.top, scale)
+}
+
+/// Best-effort title-bar / border offset before the winit `Window` exists, in
+/// logical pixels.
+///
+/// `getInnerPosition()` is the content-view origin, but the window is created
+/// asynchronously and JS can read it straight after the constructor. Falling
+/// back to the frame origin reported a point on the title bar; ask the OS what
+/// the chrome will measure instead. `flags` are the creation-time
+/// `LAUFEY_WINDOW_FLAG_*` bits — a frameless window has no chrome to offset.
+#[cfg(target_os = "macos")]
+pub fn frame_offset_hint(flags: u32) -> (i32, i32) {
+  if flags & LAUFEY_WINDOW_FLAG_FRAMELESS != 0 {
+    return (0, 0);
   }
+  use objc2_app_kit::{NSWindow, NSWindowStyleMask};
+  use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
+  let mtm = unsafe { MainThreadMarker::new_unchecked() };
+  let style = NSWindowStyleMask::Titled
+    | NSWindowStyleMask::Closable
+    | NSWindowStyleMask::Miniaturizable
+    | NSWindowStyleMask::Resizable;
+  let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(100.0, 100.0));
+  let content = NSWindow::contentRectForFrameRect_styleMask(frame, style, mtm);
+  let dx = (content.origin.x - frame.origin.x).round() as i32;
+  let dy = (frame.size.height - content.size.height).round() as i32;
+  (dx.max(0), dy.max(0))
+}
+
+/// Best-effort title-bar / border offset before the winit `Window` exists, in
+/// logical pixels.
+///
+/// `getInnerPosition()` is the content-view origin, but the window is created
+/// asynchronously and JS can read it straight after the constructor. Falling
+/// back to the frame origin reported a point on the title bar; ask the OS what
+/// the chrome will measure instead. `flags` are the creation-time
+/// `LAUFEY_WINDOW_FLAG_*` bits — a frameless window has no chrome to offset.
+///
+/// On Linux the frame offset is the compositor's business.
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+pub fn frame_offset_hint(_flags: u32) -> (i32, i32) {
+  (0, 0)
 }
 
 pub fn physical_pos_to_logical_f64(
@@ -4066,40 +4099,44 @@ pub fn next_click_count(
 /// gets reported one position stale. Win32 button messages carry their own
 /// coordinates and browsers use those; the closest equivalent here is to ask
 /// the OS where the pointer is before dispatching.
-///
-/// No-op off Windows, where `CursorMoved` already arrives in order.
-#[allow(unused_variables)]
+#[cfg(target_os = "windows")]
 pub fn refresh_cursor_position(
   ws: &WindowState,
   window: &Window,
   scale_factor: f64,
 ) {
-  #[cfg(target_os = "windows")]
-  {
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use windows_sys::Win32::Foundation::POINT;
-    use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+  use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+  use windows_sys::Win32::Foundation::POINT;
+  use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
+  use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
-    let Ok(handle) = window.window_handle() else {
+  let Ok(handle) = window.window_handle() else {
+    return;
+  };
+  let RawWindowHandle::Win32(win32) = handle.as_raw() else {
+    return;
+  };
+  let hwnd = win32.hwnd.get() as *mut core::ffi::c_void;
+  let mut pt = POINT { x: 0, y: 0 };
+  unsafe {
+    if GetCursorPos(&mut pt) == 0 || ScreenToClient(hwnd, &mut pt) == 0 {
       return;
-    };
-    let RawWindowHandle::Win32(win32) = handle.as_raw() else {
-      return;
-    };
-    let hwnd = win32.hwnd.get() as *mut core::ffi::c_void;
-    let mut pt = POINT { x: 0, y: 0 };
-    unsafe {
-      if GetCursorPos(&mut pt) == 0 || ScreenToClient(hwnd, &mut pt) == 0 {
-        return;
-      }
     }
-    // Client coordinates, so this is already relative to the content view;
-    // a drag past the edge legitimately reports negatives.
-    *ws.cursor_position.lock().unwrap() =
-      physical_pos_to_logical_f64(pt.x as f64, pt.y as f64, scale_factor);
-    *ws.cursor_seen.lock().unwrap() = true;
   }
+  // Client coordinates, so this is already relative to the content view;
+  // a drag past the edge legitimately reports negatives.
+  *ws.cursor_position.lock().unwrap() =
+    physical_pos_to_logical_f64(pt.x as f64, pt.y as f64, scale_factor);
+  *ws.cursor_seen.lock().unwrap() = true;
+}
+
+/// No-op off Windows, where `CursorMoved` already arrives in order.
+#[cfg(not(target_os = "windows"))]
+pub fn refresh_cursor_position(
+  _ws: &WindowState,
+  _window: &Window,
+  _scale_factor: f64,
+) {
 }
 
 pub fn dispatch_mouse_click_event(
