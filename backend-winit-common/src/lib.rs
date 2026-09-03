@@ -3430,18 +3430,9 @@ pub fn frame_offset_hint(flags: u32) -> (i32, i32) {
   physical_pos_to_logical_i32(-rect.left, -rect.top, scale)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn frame_offset_hint(_flags: u32) -> (i32, i32) {
   // The frame offset is the compositor's business.
-  (0, 0)
-}
-
-#[cfg(not(any(
-  target_os = "macos",
-  target_os = "windows",
-  target_os = "linux"
-)))]
-pub fn frame_offset_hint(_flags: u32) -> (i32, i32) {
   (0, 0)
 }
 
@@ -4135,19 +4126,7 @@ pub fn refresh_cursor_position(
   *ws.cursor_seen.lock().unwrap() = true;
 }
 
-#[cfg(target_os = "linux")]
-pub fn refresh_cursor_position(
-  _ws: &WindowState,
-  _window: &Window,
-  _scale_factor: f64,
-) {
-}
-
-#[cfg(not(any(
-  target_os = "macos",
-  target_os = "windows",
-  target_os = "linux"
-)))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn refresh_cursor_position(
   _ws: &WindowState,
   _window: &Window,
