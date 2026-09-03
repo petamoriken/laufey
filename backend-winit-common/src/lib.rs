@@ -3354,6 +3354,15 @@ pub fn primary_scale_hint() -> f64 {
     .unwrap_or(1.0)
 }
 
+#[cfg(not(any(
+  target_os = "macos",
+  target_os = "windows",
+  target_os = "linux"
+)))]
+pub fn primary_scale_hint() -> f64 {
+  1.0
+}
+
 /// Best-effort title-bar / border offset before the winit `Window` exists, in
 /// logical pixels.
 ///
@@ -3424,6 +3433,15 @@ pub fn frame_offset_hint(flags: u32) -> (i32, i32) {
 #[cfg(target_os = "linux")]
 pub fn frame_offset_hint(_flags: u32) -> (i32, i32) {
   // The frame offset is the compositor's business.
+  (0, 0)
+}
+
+#[cfg(not(any(
+  target_os = "macos",
+  target_os = "windows",
+  target_os = "linux"
+)))]
+pub fn frame_offset_hint(_flags: u32) -> (i32, i32) {
   (0, 0)
 }
 
@@ -4118,6 +4136,18 @@ pub fn refresh_cursor_position(
 }
 
 #[cfg(target_os = "linux")]
+pub fn refresh_cursor_position(
+  _ws: &WindowState,
+  _window: &Window,
+  _scale_factor: f64,
+) {
+}
+
+#[cfg(not(any(
+  target_os = "macos",
+  target_os = "windows",
+  target_os = "linux"
+)))]
 pub fn refresh_cursor_position(
   _ws: &WindowState,
   _window: &Window,
