@@ -234,6 +234,19 @@ impl ApplicationHandler<UserEvent> for App {
   }
 
   fn about_to_wait(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+    // The queue is drained, so any `Resized` burst from creating a window has
+    // been seen. Re-sync each window's cached geometry from the real window
+    // and start reporting resizes.
+    if let Some(state) = BackendState::get() {
+      for (laufey_id, info) in &self.windows {
+        state.common.with_window(*laufey_id, |ws| {
+          laufey_backend_winit_common::settle_creation_geometry(
+            ws,
+            &info.window,
+          );
+        });
+      }
+    }
     laufey_backend_winit_common::poll_menu_events();
     // The tray lives on the primary monitor (menu bar / taskbar); its scale
     // factor converts tray-icon's physical rect into the logical window space.
@@ -309,9 +322,13 @@ impl ApplicationHandler<UserEvent> for App {
             if let Some(inner) = inner {
               *ws.current_inner_position.lock().unwrap() = Some(inner);
             }
-            prev != Some((width, height))
+            // Creating a window emits several `Resized` events for sizes the
+            // app never asked for. Keep the cache current, but stay silent
+            // until `about_to_wait` has drained that burst.
+            *ws.resize_reporting_armed.lock().unwrap()
+              && prev != Some((width, height))
           })
-          .unwrap_or(true);
+          .unwrap_or(false);
         if changed {
           laufey_backend_winit_common::dispatch_resize_event(
             &state.common.handlers,
@@ -424,7 +441,17 @@ impl ApplicationHandler<UserEvent> for App {
         button,
         ..
       } => {
+        let window = self.windows.get(&laufey_id).map(|info| &info.window);
         state.common.with_window(laufey_id, |ws| {
+          // `MouseInput` carries no position, so make sure the cached one is
+          // not behind a move that has yet to be dequeued.
+          if let Some(window) = window {
+            laufey_backend_winit_common::refresh_cursor_position(
+              ws,
+              window,
+              scale_factor,
+            );
+          }
           laufey_backend_winit_common::dispatch_mouse_click_event(
             &state.common.handlers,
             ws,

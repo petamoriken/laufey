@@ -1775,6 +1775,16 @@ pub struct WindowState {
   pub last_press_button: Mutex<Option<winit::event::MouseButton>>,
   pub last_press_position: Mutex<Option<(f64, f64)>>,
   pub click_count: Mutex<i32>,
+  /// False until the creation-time `Resized` burst has been drained.
+  ///
+  /// Creating a window makes the OS emit several `Resized` events describing
+  /// intermediate sizes (on Windows: a default size, then the DIP-adjusted
+  /// one, then the requested one). They are all *different*, so the
+  /// same-size check cannot collapse them and the app would see `resize` fire
+  /// for sizes it never asked for. Nothing is dispatched while this is false;
+  /// `settle_creation_geometry` re-syncs from the real window and arms it
+  /// once the event loop first goes idle.
+  pub resize_reporting_armed: Mutex<bool>,
 }
 
 impl WindowState {
@@ -1800,6 +1810,7 @@ impl WindowState {
       last_press_button: Mutex::new(None),
       last_press_position: Mutex::new(None),
       click_count: Mutex::new(0),
+      resize_reporting_armed: Mutex::new(false),
     }
   }
 }
@@ -2154,8 +2165,13 @@ macro_rules! define_common_backend_fns {
             px = ix;
             py = iy;
           } else if let Some((ox, oy)) = *ws.pending_position.lock().unwrap() {
-            px = ox;
-            py = oy;
+            // The window does not exist yet, so offset the requested frame
+            // origin by what the chrome is going to measure rather than
+            // reporting a point on the title bar.
+            let (dx, dy) =
+              $crate::frame_offset_hint(*ws.pending_flags.lock().unwrap());
+            px = ox + dx;
+            py = oy + dy;
           }
         });
       }
@@ -3330,6 +3346,62 @@ pub fn primary_scale_hint() -> f64 {
   }
 }
 
+/// Best-effort title-bar / border offset before the winit `Window` exists, in
+/// logical pixels.
+///
+/// `getInnerPosition()` is the content-view origin, but the window is created
+/// asynchronously and JS can read it straight after the constructor. Falling
+/// back to the frame origin reported a point on the title bar; ask the OS what
+/// the chrome will measure instead. `flags` are the creation-time
+/// `LAUFEY_WINDOW_FLAG_*` bits — a frameless window has no chrome to offset.
+pub fn frame_offset_hint(flags: u32) -> (i32, i32) {
+  if flags & LAUFEY_WINDOW_FLAG_FRAMELESS != 0 {
+    return (0, 0);
+  }
+  #[cfg(target_os = "windows")]
+  {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::HiDpi::{
+      AdjustWindowRectExForDpi, GetDpiForSystem,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+      WS_EX_WINDOWEDGE, WS_OVERLAPPEDWINDOW,
+    };
+    let dpi = unsafe { GetDpiForSystem() };
+    if dpi == 0 {
+      return (0, 0);
+    }
+    // Adjusting an empty client rect leaves the chrome thickness in the
+    // (now negative) left/top corner.
+    let mut rect = RECT {
+      left: 0,
+      top: 0,
+      right: 0,
+      bottom: 0,
+    };
+    let ok = unsafe {
+      AdjustWindowRectExForDpi(
+        &mut rect,
+        WS_OVERLAPPEDWINDOW,
+        0,
+        WS_EX_WINDOWEDGE,
+        dpi,
+      )
+    };
+    if ok == 0 {
+      return (0, 0);
+    }
+    let scale = dpi as f64 / 96.0;
+    return physical_pos_to_logical_i32(-rect.left, -rect.top, scale);
+  }
+  #[cfg(not(target_os = "windows"))]
+  {
+    // macOS reports the content origin directly once the window exists, and
+    // on Linux the frame offset is the compositor's business.
+    (0, 0)
+  }
+}
+
 pub fn physical_pos_to_logical_f64(
   x: f64,
   y: f64,
@@ -3411,6 +3483,36 @@ pub fn apply_pending_post_create(ws: &WindowState, window: &Window) {
   if *ws.pending_flags.lock().unwrap() & LAUFEY_WINDOW_FLAG_NO_ACTIVATE != 0 {
     window.set_window_level(WindowLevel::AlwaysOnTop);
   }
+}
+
+/// Close out the creation-time `Resized` burst, called once the event loop
+/// first goes idle after the window was built.
+///
+/// Re-syncs the cached geometry from the real window and arms resize
+/// reporting. Re-syncing matters as much as arming: a stale `Resized` that
+/// slips past the first idle then carries a size equal to the one already
+/// cached, so the same-size check in the `Resized` handler drops it instead of
+/// reporting a size the window no longer has.
+///
+/// Returns true the first time it arms (so callers can skip repeat work).
+pub fn settle_creation_geometry(ws: &WindowState, window: &Window) -> bool {
+  let mut armed = ws.resize_reporting_armed.lock().unwrap();
+  if *armed {
+    return false;
+  }
+  let scale = window.scale_factor();
+  let size = window.inner_size();
+  if size.width > 0 && size.height > 0 {
+    *ws.current_size.lock().unwrap() =
+      Some(physical_size_to_logical_i32(size.width, size.height, scale));
+    *ws.current_scale.lock().unwrap() = scale;
+  }
+  if let Ok(inner) = window.inner_position() {
+    *ws.current_inner_position.lock().unwrap() =
+      Some(physical_pos_to_logical_i32(inner.x, inner.y, scale));
+  }
+  *armed = true;
+  true
 }
 
 // --- Native dialog implementation ---
@@ -3917,6 +4019,52 @@ pub fn next_click_count(
     prev_count + 1
   } else {
     1
+  }
+}
+
+/// Re-read the pointer from the OS into `cursor_position`, in logical pixels.
+///
+/// winit's `MouseInput` carries no coordinates, so button events are reported
+/// at the last position `CursorMoved` cached. On Windows that is not
+/// reliable: `WM_*BUTTONDOWN` is a genuine queued message while `WM_MOUSEMOVE`
+/// is synthesized from the current pointer only when the queue holds nothing
+/// else, so a press can be dequeued *before* the move that preceded it and
+/// gets reported one position stale. Win32 button messages carry their own
+/// coordinates and browsers use those; the closest equivalent here is to ask
+/// the OS where the pointer is before dispatching.
+///
+/// No-op off Windows, where `CursorMoved` already arrives in order.
+#[allow(unused_variables)]
+pub fn refresh_cursor_position(
+  ws: &WindowState,
+  window: &Window,
+  scale_factor: f64,
+) {
+  #[cfg(target_os = "windows")]
+  {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+    let Ok(handle) = window.window_handle() else {
+      return;
+    };
+    let RawWindowHandle::Win32(win32) = handle.as_raw() else {
+      return;
+    };
+    let hwnd = win32.hwnd.get() as *mut core::ffi::c_void;
+    let mut pt = POINT { x: 0, y: 0 };
+    unsafe {
+      if GetCursorPos(&mut pt) == 0 || ScreenToClient(hwnd, &mut pt) == 0 {
+        return;
+      }
+    }
+    // Client coordinates, so this is already relative to the content view;
+    // a drag past the edge legitimately reports negatives.
+    *ws.cursor_position.lock().unwrap() =
+      physical_pos_to_logical_f64(pt.x as f64, pt.y as f64, scale_factor);
+    *ws.cursor_seen.lock().unwrap() = true;
   }
 }
 
@@ -4486,6 +4634,30 @@ mod mouse_tests {
     let ws = WindowState::new();
     assert_eq!(*ws.current_scale.lock().unwrap(), primary_scale_hint());
     assert!(*ws.current_scale.lock().unwrap() > 0.0);
+  }
+
+  #[test]
+  fn frameless_window_has_no_frame_offset() {
+    assert_eq!(frame_offset_hint(LAUFEY_WINDOW_FLAG_FRAMELESS), (0, 0));
+  }
+
+  #[cfg(target_os = "windows")]
+  #[test]
+  fn decorated_window_offsets_by_the_title_bar() {
+    // A decorated window's content starts below the caption, so the hint has
+    // to be further down than the frame origin. Both the caption height and
+    // the border width vary by DPI and theme, so only the sign is asserted.
+    let (dx, dy) = frame_offset_hint(0);
+    assert!(dy > 0, "expected a caption offset, got {dy}");
+    assert!(dx >= 0, "expected a non-negative border offset, got {dx}");
+    assert!(dy > dx, "caption should exceed the side border");
+  }
+
+  #[test]
+  fn new_window_starts_with_resize_reporting_disarmed() {
+    // Otherwise the creation-time `Resized` burst reaches the app.
+    let ws = WindowState::new();
+    assert!(!*ws.resize_reporting_armed.lock().unwrap());
   }
 
   #[test]
