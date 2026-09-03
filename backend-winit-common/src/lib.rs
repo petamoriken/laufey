@@ -3496,20 +3496,39 @@ pub fn apply_pending_post_create(ws: &WindowState, window: &Window) {
 ///
 /// Returns true the first time it arms (so callers can skip repeat work).
 pub fn settle_creation_geometry(ws: &WindowState, window: &Window) -> bool {
+  let scale = window.scale_factor();
+  let size = window.inner_size();
+  let size = (size.width > 0 && size.height > 0)
+    .then(|| physical_size_to_logical_i32(size.width, size.height, scale));
+  let inner = window
+    .inner_position()
+    .ok()
+    .map(|p| physical_pos_to_logical_i32(p.x, p.y, scale));
+  arm_resize_reporting(ws, size, scale, inner)
+}
+
+/// The state machine behind [`settle_creation_geometry`], split out so the
+/// arm-once semantics are testable without a real `Window` (creating one
+/// needs a display server).
+///
+/// `size` and `inner` are already in logical pixels, and are skipped when the
+/// platform could not supply them.
+pub fn arm_resize_reporting(
+  ws: &WindowState,
+  size: Option<(i32, i32)>,
+  scale: f64,
+  inner: Option<(i32, i32)>,
+) -> bool {
   let mut armed = ws.resize_reporting_armed.lock().unwrap();
   if *armed {
     return false;
   }
-  let scale = window.scale_factor();
-  let size = window.inner_size();
-  if size.width > 0 && size.height > 0 {
-    *ws.current_size.lock().unwrap() =
-      Some(physical_size_to_logical_i32(size.width, size.height, scale));
+  if let Some(size) = size {
+    *ws.current_size.lock().unwrap() = Some(size);
     *ws.current_scale.lock().unwrap() = scale;
   }
-  if let Ok(inner) = window.inner_position() {
-    *ws.current_inner_position.lock().unwrap() =
-      Some(physical_pos_to_logical_i32(inner.x, inner.y, scale));
+  if let Some(inner) = inner {
+    *ws.current_inner_position.lock().unwrap() = Some(inner);
   }
   *armed = true;
   true
@@ -4658,6 +4677,45 @@ mod mouse_tests {
     // Otherwise the creation-time `Resized` burst reaches the app.
     let ws = WindowState::new();
     assert!(!*ws.resize_reporting_armed.lock().unwrap());
+  }
+
+  #[test]
+  fn arming_resyncs_geometry_and_happens_once() {
+    let ws = WindowState::new();
+    assert!(arm_resize_reporting(
+      &ws,
+      Some((600, 400)),
+      1.5,
+      Some((7, 30))
+    ));
+    assert!(*ws.resize_reporting_armed.lock().unwrap());
+    assert_eq!(*ws.current_size.lock().unwrap(), Some((600, 400)));
+    assert_eq!(*ws.current_scale.lock().unwrap(), 1.5);
+    assert_eq!(*ws.current_inner_position.lock().unwrap(), Some((7, 30)));
+
+    // `about_to_wait` runs on every loop iteration, so this is called
+    // constantly; only the first call may touch the cache. Re-syncing later
+    // would clobber a real resize with a stale value.
+    assert!(!arm_resize_reporting(
+      &ws,
+      Some((999, 999)),
+      3.0,
+      Some((9, 9))
+    ));
+    assert_eq!(*ws.current_size.lock().unwrap(), Some((600, 400)));
+    assert_eq!(*ws.current_scale.lock().unwrap(), 1.5);
+    assert_eq!(*ws.current_inner_position.lock().unwrap(), Some((7, 30)));
+  }
+
+  #[test]
+  fn arming_without_geometry_still_arms() {
+    // A platform that cannot report size or position yet (Wayland gives no
+    // window position at all) must not leave reporting disarmed forever.
+    let ws = WindowState::new();
+    assert!(arm_resize_reporting(&ws, None, 1.0, None));
+    assert!(*ws.resize_reporting_armed.lock().unwrap());
+    assert_eq!(*ws.current_size.lock().unwrap(), None);
+    assert_eq!(*ws.current_inner_position.lock().unwrap(), None);
   }
 
   #[test]
