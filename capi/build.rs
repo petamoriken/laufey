@@ -28,6 +28,12 @@ fn main() {
       target_arch.as_str()
     };
     builder = builder
+      // `_NATIVE_WCHAR_T_DEFINED` below tells the UCRT headers that `wchar_t`
+      // is a builtin, which is only true in C++. Without this the UCRT's own
+      // uses of it fail with "unknown type name 'wchar_t'". The header is
+      // `extern "C"`, so parsing it as C++ does not change the ABI.
+      .clang_arg("-x")
+      .clang_arg("c++")
       .clang_arg("-fms-extensions")
       .clang_arg("-fms-compatibility")
       .clang_arg("-fdelayed-template-parsing")
