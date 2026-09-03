@@ -1777,7 +1777,9 @@ pub struct WindowState {
   pub ime_composing: Mutex<bool>,
   /// Last keydown used to drop the extra press Japanese IMEs (e.g. Google
   /// ひらがな) post for the same physical key.
-  pub last_key_echo: Mutex<Option<(String, String, std::time::Instant)>>,
+  /// `code` and time of the key press that has not been released yet, used to
+  /// spot an IME's duplicate keydown. See [`is_ime_key_echo`].
+  pub last_key_echo: Mutex<Option<(String, std::time::Instant)>>,
 }
 
 impl WindowState {
@@ -3768,28 +3770,43 @@ pub fn dispatch_ime_event(
 pub const IME_KEY_ECHO_WINDOW: std::time::Duration =
   std::time::Duration::from_millis(40);
 
+/// `last` holds the press that has not been released yet, so a press can only
+/// be judged an echo of one still physically down.
 pub fn is_ime_key_echo(
-  last: &mut Option<(String, String, std::time::Instant)>,
+  last: &mut Option<(String, std::time::Instant)>,
   pressed: bool,
-  key: &str,
+  repeat: bool,
   code: &str,
   now: std::time::Instant,
 ) -> bool {
   if !pressed {
+    // A release ends that key's press. Whatever comes next for it is a real
+    // second press, not a duplicate of the first — typing "nn" (ん) faster
+    // than the window would otherwise lose the second n.
+    if last.as_ref().is_some_and(|(prev, _)| prev == code) {
+      *last = None;
+    }
     return false;
   }
-  if let Some((prev_key, prev_code, t)) = last.as_ref() {
-    if now.duration_since(*t) < IME_KEY_ECHO_WINDOW {
-      let same_code =
-        !code.is_empty() && code != "Unidentified" && code == prev_code;
-      let same_key =
-        !key.is_empty() && key != "Unidentified" && key == prev_key;
-      if same_code || same_key {
-        return true;
-      }
+  // Auto-repeat is a legitimate stream of presses with no release between
+  // them. Windows' fastest repeat rate is ~33ms, inside the window, so
+  // filtering here silently drops half of every held key.
+  if repeat {
+    return false;
+  }
+  // Only the same physical key can be an echo, so match on `code` alone.
+  // Matching the logical `key` collapses distinct keys: every key the IME
+  // consumes reports "Process", which is exactly when this runs.
+  if let Some((prev_code, t)) = last.as_ref() {
+    if now.duration_since(*t) < IME_KEY_ECHO_WINDOW
+      && !code.is_empty()
+      && code != "Unidentified"
+      && code == prev_code
+    {
+      return true;
     }
   }
-  *last = Some((key.to_string(), code.to_string(), now));
+  *last = Some((code.to_string(), now));
   false
 }
 
@@ -3812,7 +3829,7 @@ pub fn dispatch_keyboard_event(
     if is_ime_key_echo(
       &mut ws.last_key_echo.lock().unwrap(),
       state == LAUFEY_KEY_PRESSED,
-      &key_str,
+      key_event.repeat,
       &code_str,
       std::time::Instant::now(),
     ) {
@@ -4248,11 +4265,11 @@ mod ime_tests {
   fn ime_key_echo_drops_the_second_a() {
     let mut last = None;
     let t0 = std::time::Instant::now();
-    assert!(!is_ime_key_echo(&mut last, true, "a", "KeyA", t0));
+    assert!(!is_ime_key_echo(&mut last, true, false, "KeyA", t0));
     assert!(is_ime_key_echo(
       &mut last,
       true,
-      "a",
+      false,
       "KeyA",
       t0 + std::time::Duration::from_millis(5),
     ));
@@ -4262,11 +4279,11 @@ mod ime_tests {
   fn ime_key_echo_keeps_a_later_real_press() {
     let mut last = None;
     let t0 = std::time::Instant::now();
-    assert!(!is_ime_key_echo(&mut last, true, "a", "KeyA", t0));
+    assert!(!is_ime_key_echo(&mut last, true, false, "KeyA", t0));
     assert!(!is_ime_key_echo(
       &mut last,
       true,
-      "a",
+      false,
       "KeyA",
       t0 + std::time::Duration::from_millis(80),
     ));
@@ -4276,8 +4293,78 @@ mod ime_tests {
   fn ime_key_echo_keeps_a_different_key() {
     let mut last = None;
     let t0 = std::time::Instant::now();
-    assert!(!is_ime_key_echo(&mut last, true, "a", "KeyA", t0));
-    assert!(!is_ime_key_echo(&mut last, true, "i", "KeyI", t0));
+    assert!(!is_ime_key_echo(&mut last, true, false, "KeyA", t0));
+    assert!(!is_ime_key_echo(&mut last, true, false, "KeyI", t0));
+  }
+
+  #[test]
+  fn ime_key_echo_keeps_auto_repeat() {
+    // Windows' fastest repeat rate is ~33ms, inside the 40ms window. Measured
+    // on a 150% display box with KeyboardSpeed=31, filtering repeats here
+    // delivered 5 of 10 held-key presses.
+    let mut last = None;
+    let t0 = std::time::Instant::now();
+    assert!(!is_ime_key_echo(&mut last, true, false, "KeyA", t0));
+    for i in 1..10 {
+      let t = t0 + std::time::Duration::from_millis(33 * i);
+      assert!(
+        !is_ime_key_echo(&mut last, true, true, "KeyA", t),
+        "auto-repeat #{i} was dropped"
+      );
+    }
+  }
+
+  #[test]
+  fn ime_key_echo_keeps_a_press_after_release() {
+    // "nn" (ん) typed faster than the window: the release proves the second
+    // press is real.
+    let mut last = None;
+    let t0 = std::time::Instant::now();
+    assert!(!is_ime_key_echo(&mut last, true, false, "KeyN", t0));
+    assert!(!is_ime_key_echo(
+      &mut last,
+      false,
+      false,
+      "KeyN",
+      t0 + std::time::Duration::from_millis(5),
+    ));
+    assert!(!is_ime_key_echo(
+      &mut last,
+      true,
+      false,
+      "KeyN",
+      t0 + std::time::Duration::from_millis(10),
+    ));
+  }
+
+  #[test]
+  fn ime_key_echo_keeps_distinct_keys_during_composition() {
+    // Every key the IME consumes reports `key` as "Process", so matching the
+    // logical key collapsed distinct presses. Typing "nihongo" at speed lost
+    // the h and o presses before this matched on `code` alone.
+    let mut last = None;
+    let t0 = std::time::Instant::now();
+    let t = |ms| t0 + std::time::Duration::from_millis(ms);
+    assert!(!is_ime_key_echo(&mut last, true, false, "KeyN", t(0)));
+    assert!(!is_ime_key_echo(&mut last, false, false, "KeyN", t(5)));
+    assert!(!is_ime_key_echo(&mut last, true, false, "KeyI", t(10)));
+    assert!(!is_ime_key_echo(&mut last, false, false, "KeyI", t(15)));
+    assert!(!is_ime_key_echo(&mut last, true, false, "KeyH", t(20)));
+  }
+
+  #[test]
+  fn ime_key_echo_ignores_unidentified_codes() {
+    // Synthetic unicode input reports no usable physical key; never guess.
+    let mut last = None;
+    let t0 = std::time::Instant::now();
+    assert!(!is_ime_key_echo(&mut last, true, false, "Unidentified", t0));
+    assert!(!is_ime_key_echo(
+      &mut last,
+      true,
+      false,
+      "Unidentified",
+      t0 + std::time::Duration::from_millis(5),
+    ));
   }
 
   #[test]
