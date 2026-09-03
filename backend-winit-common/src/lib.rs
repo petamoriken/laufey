@@ -3317,7 +3317,8 @@ pub fn primary_scale_hint() -> f64 {
   }
   #[cfg(target_os = "windows")]
   {
-    windows_sys::Win32::UI::HiDpi::GetDpiForSystem() as f64 / 96.0
+    let dpi = unsafe { windows_sys::Win32::UI::HiDpi::GetDpiForSystem() };
+    return if dpi > 0 { dpi as f64 / 96.0 } else { 1.0 };
   }
   #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
   {
