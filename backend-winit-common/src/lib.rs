@@ -3394,10 +3394,25 @@ pub fn frame_offset_hint(flags: u32) -> (i32, i32) {
     let scale = dpi as f64 / 96.0;
     return physical_pos_to_logical_i32(-rect.left, -rect.top, scale);
   }
-  #[cfg(not(target_os = "windows"))]
+  #[cfg(target_os = "macos")]
   {
-    // macOS reports the content origin directly once the window exists, and
-    // on Linux the frame offset is the compositor's business.
+    use objc2_app_kit::{NSWindow, NSWindowStyleMask};
+    use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    let style = NSWindowStyleMask::Titled
+      | NSWindowStyleMask::Closable
+      | NSWindowStyleMask::Miniaturizable
+      | NSWindowStyleMask::Resizable;
+    let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(100.0, 100.0));
+    let content =
+      NSWindow::contentRectForFrameRect_styleMask(frame, style, mtm);
+    let dx = (content.origin.x - frame.origin.x).round() as i32;
+    let dy = (frame.size.height - content.size.height).round() as i32;
+    return (dx.max(0), dy.max(0));
+  }
+  #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+  {
+    // On Linux the frame offset is the compositor's business.
     (0, 0)
   }
 }
@@ -4660,7 +4675,7 @@ mod mouse_tests {
     assert_eq!(frame_offset_hint(LAUFEY_WINDOW_FLAG_FRAMELESS), (0, 0));
   }
 
-  #[cfg(target_os = "windows")]
+  #[cfg(any(target_os = "windows", target_os = "macos"))]
   #[test]
   fn decorated_window_offsets_by_the_title_bar() {
     // A decorated window's content starts below the caption, so the hint has
