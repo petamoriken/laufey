@@ -354,7 +354,10 @@ impl ApplicationHandler<UserEvent> for App {
           })
         });
         state.common.with_window(laufey_id, |ws| {
-          *ws.pending_position.lock().unwrap() = Some((x, y));
+          // The authoritative origin, not `pending_position` — that is a
+          // request waiting to be applied, and re-arming it here would make a
+          // later apply move the window back to wherever it was dragged from.
+          *ws.current_position.lock().unwrap() = Some((x, y));
           if let Some(inner) = inner {
             *ws.current_inner_position.lock().unwrap() = Some(inner);
           }

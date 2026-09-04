@@ -1787,6 +1787,14 @@ pub struct WindowState {
   /// Content-view top-left in screen DIP. `getPosition` is the frame;
   /// this plus `clientX`/`clientY` is `MouseEvent.screenX`/`screenY`.
   pub current_inner_position: Mutex<Option<(i32, i32)>>,
+  /// Authoritative frame top-left in screen DIP, seeded at create and
+  /// refreshed on `Moved`. Backs `get_window_position`.
+  ///
+  /// Distinct from `pending_position`, which is a one-shot *requested*
+  /// position consumed when applied — reading that back reported (0, 0) once
+  /// the request had been handled, and reported the request rather than the
+  /// real origin where the OS placed the window somewhere else.
+  pub current_position: Mutex<Option<(i32, i32)>>,
   pub pending_position: Mutex<Option<(i32, i32)>>,
   pub pending_resizable: Mutex<Option<bool>>,
   pub pending_always_on_top: Mutex<Option<bool>>,
@@ -1831,6 +1839,7 @@ impl WindowState {
       current_size: Mutex::new(None),
       current_scale: Mutex::new(primary_scale_hint()),
       current_inner_position: Mutex::new(None),
+      current_position: Mutex::new(None),
       pending_position: Mutex::new(None),
       pending_resizable: Mutex::new(None),
       pending_always_on_top: Mutex::new(None),
@@ -2247,7 +2256,11 @@ macro_rules! define_common_backend_fns {
       let mut found = false;
       if let Some(state) = <$B as $crate::BackendAccess>::get() {
         if let Some(()) = state.common().with_window(window_id, |ws| {
-          if let Some((px, py)) = *ws.pending_position.lock().unwrap() {
+          // Prefer the real origin; fall back to a request that has not been
+          // applied yet, which is all there is before the window exists.
+          let pos = (*ws.current_position.lock().unwrap())
+            .or(*ws.pending_position.lock().unwrap());
+          if let Some((px, py)) = pos {
             if !x.is_null() {
               *x = px;
             }
@@ -3183,6 +3196,10 @@ pub fn handle_common_event<B: BackendAccess>(
         state.common().with_window(window_id, |ws| {
           if let Some((x, y)) = ws.pending_position.lock().unwrap().take() {
             window.set_outer_position(LogicalPosition::new(x, y));
+            // Reflect the move now rather than waiting for `Moved`, so a read
+            // straight after `set_position` doesn't report the old origin.
+            // `Moved` corrects this if the OS placed it elsewhere.
+            *ws.current_position.lock().unwrap() = Some((x, y));
           }
         });
       }
@@ -3568,6 +3585,17 @@ pub fn apply_pending_post_create(ws: &WindowState, window: &Window) {
   if let Ok(inner) = window.inner_position() {
     *ws.current_inner_position.lock().unwrap() =
       Some(physical_pos_to_logical_i32(inner.x, inner.y, scale));
+  }
+  // Same for the frame origin. `get_window_position` reads `pending_position`,
+  // which is only ever a *requested* position, so a window the OS placed
+  // itself reported (0, 0) until the first `Moved` arrived; and where the OS
+  // adjusted a requested position, it reported the request rather than where
+  // the window actually is.
+  // Same for the frame origin, so `get_window_position` has an authoritative
+  // value that does not depend on a request having been made.
+  if let Ok(outer) = window.outer_position() {
+    *ws.current_position.lock().unwrap() =
+      Some(physical_pos_to_logical_i32(outer.x, outer.y, scale));
   }
 
   if let Some(true) = *ws.pending_always_on_top.lock().unwrap() {
