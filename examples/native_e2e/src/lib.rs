@@ -12,20 +12,26 @@
 //!
 //! This covers Layer 0 (in-process readback + event-callback round-trips),
 //! menu/tray *click* round-trips via the `test_click_menu_item` C ABI hook
-//! (API 30+; `N/A` on backends without it), and the close-handler round-trip
-//! via `test_trigger_close_requested` (API 31+; `N/A` on backends without
-//! it). OS-observer *structure* checks
-//! (Layer 1: the Linux D-Bus driver; macOS/Windows pending a backend hook)
-//! live outside this runtime. See docs/e2e-testing.md.
+//! (API 30+; `N/A` on backends without it), the close-handler round-trip
+//! via `test_trigger_close_requested` (API 31+), and synthetic pointer /
+//! key / wheel events via `test_inject_input` (API 35). OS-observer
+//! *structure* checks (Layer 1: the Linux D-Bus driver; macOS/Windows
+//! pending a backend hook) live outside this runtime. See
+//! docs/e2e-testing.md.
 //!
 //! Mirrors the execution model of `examples/cef_e2e` (tokio runtime, spawned
 //! event-loop pump, PASS/FAIL + exit code) so the existing runtime loader drives
 //! it unchanged.
 
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use laufey::{MenuItem, TrayIcon, Window, WindowOptions};
+use laufey::{
+  CursorEnterLeaveEvent, KeyState, KeyboardEvent, MenuItem, MouseButton,
+  MouseButtonState, MouseClickEvent, MouseMoveEvent, TestInput, TrayIcon,
+  WheelDeltaMode, WheelEvent, Window, WindowOptions, LAUFEY_MOD_SHIFT,
+  LAUFEY_MOUSE_BUTTON_LEFT, LAUFEY_WHEEL_DELTA_LINE,
+};
 
 static FAILED: AtomicBool = AtomicBool::new(false);
 
@@ -246,6 +252,204 @@ fn e2e_main() {
       frameless.get_inner_position(),
       false,
     );
+
+    // ---- test_inject_input ----------------------------------------------
+    let last_key = Arc::new(Mutex::new(None::<KeyboardEvent>));
+    let last_click = Arc::new(Mutex::new(None::<MouseClickEvent>));
+    let last_move = Arc::new(Mutex::new(None::<MouseMoveEvent>));
+    let last_wheel = Arc::new(Mutex::new(None::<WheelEvent>));
+    let last_enter = Arc::new(Mutex::new(None::<CursorEnterLeaveEvent>));
+    let input_win = {
+      let lk = last_key.clone();
+      let lc = last_click.clone();
+      let lm = last_move.clone();
+      let lw = last_wheel.clone();
+      let le = last_enter.clone();
+      Window::new(200, 150)
+        .title("native-e2e-input")
+        .on_keyboard_event(move |e| *lk.lock().unwrap() = Some(e))
+        .on_mouse_click(move |e| *lc.lock().unwrap() = Some(e))
+        .on_mouse_move(move |e| *lm.lock().unwrap() = Some(e))
+        .on_wheel(move |e| *lw.lock().unwrap() = Some(e))
+        .on_cursor_enter_leave(move |e| *le.lock().unwrap() = Some(e))
+    };
+    let input_id = input_win.id();
+
+    if !laufey::test_inject_input(
+      input_id,
+      &TestInput::MouseMove {
+        x: 10.0,
+        y: 10.0,
+        modifiers: 0,
+      },
+    ) {
+      na("test_inject_input (backend has no hook)");
+    } else {
+      check(
+        "inject mousemove reaches on_mouse_move",
+        last_move
+          .lock()
+          .unwrap()
+          .as_ref()
+          .is_some_and(|e| (e.x - 10.0).abs() < 0.5 && (e.y - 10.0).abs() < 0.5),
+      );
+
+      // Reset hover so the next enter is pending until a real coordinate.
+      let _ = laufey::test_inject_input(
+        input_id,
+        &TestInput::CursorLeave {
+          x: 10.0,
+          y: 10.0,
+          modifiers: 0,
+        },
+      );
+      *last_enter.lock().unwrap() = None;
+      let _ = laufey::test_inject_input(
+        input_id,
+        &TestInput::CursorEnter {
+          x: 0.0,
+          y: 0.0,
+          modifiers: 0,
+        },
+      );
+      let enter_before_move = last_enter.lock().unwrap().clone();
+      let _ = laufey::test_inject_input(
+        input_id,
+        &TestInput::MouseMove {
+          x: 40.0,
+          y: 50.0,
+          modifiers: 0,
+        },
+      );
+      let enter_after_move = last_enter.lock().unwrap().clone();
+      match (enter_before_move, enter_after_move) {
+        (None, Some(e)) if e.entered && (e.x - 40.0).abs() < 0.5 && (e.y - 50.0).abs() < 0.5 => {
+          check("mouseenter waits for the first move", true);
+        }
+        (Some(e), _) if e.entered && e.x == 0.0 && e.y == 0.0 => {
+          na("mouseenter waits for the first move (backend injects enter immediately)");
+        }
+        _ => check("mouseenter waits for the first move", false),
+      }
+
+      *last_click.lock().unwrap() = None;
+      let _ = laufey::test_inject_input(
+        input_id,
+        &TestInput::MouseButton {
+          button: LAUFEY_MOUSE_BUTTON_LEFT,
+          pressed: true,
+          x: 40.0,
+          y: 50.0,
+          modifiers: 0,
+        },
+      );
+      let _ = laufey::test_inject_input(
+        input_id,
+        &TestInput::MouseButton {
+          button: LAUFEY_MOUSE_BUTTON_LEFT,
+          pressed: false,
+          x: 40.0,
+          y: 50.0,
+          modifiers: 0,
+        },
+      );
+      let first = last_click.lock().unwrap().clone();
+      check(
+        "inject click.detail is 1",
+        first.as_ref().is_some_and(|e| {
+          e.state == MouseButtonState::Released
+            && e.button == MouseButton::Left
+            && e.click_count == 1
+        }),
+      );
+
+      *last_click.lock().unwrap() = None;
+      let _ = laufey::test_inject_input(
+        input_id,
+        &TestInput::MouseButton {
+          button: LAUFEY_MOUSE_BUTTON_LEFT,
+          pressed: true,
+          x: 40.0,
+          y: 50.0,
+          modifiers: 0,
+        },
+      );
+      match last_click.lock().unwrap().as_ref().map(|e| e.click_count) {
+        Some(2) => check("inject second nearby press is click.detail 2", true),
+        Some(1) => na(
+          "inject second nearby press is click.detail 2 (backend inject does not track multi-click)",
+        ),
+        _ => check("inject second nearby press is click.detail 2", false),
+      }
+
+      *last_wheel.lock().unwrap() = None;
+      let _ = laufey::test_inject_input(
+        input_id,
+        &TestInput::Wheel {
+          delta_x: 0.0,
+          delta_y: -1.0,
+          delta_mode: LAUFEY_WHEEL_DELTA_LINE,
+          x: 40.0,
+          y: 50.0,
+          modifiers: 0,
+        },
+      );
+      check(
+        "inject line-scroll up is DOM-negative deltaY",
+        last_wheel.lock().unwrap().as_ref().is_some_and(|e| {
+          e.delta_y < 0.0 && e.delta_mode == WheelDeltaMode::Line
+        }),
+      );
+
+      *last_key.lock().unwrap() = None;
+      let _ = laufey::test_inject_input(
+        input_id,
+        &TestInput::Key {
+          key: "a".into(),
+          code: "KeyA".into(),
+          pressed: true,
+          repeat: false,
+          modifiers: 0,
+        },
+      );
+      check(
+        "inject KeyA reaches on_keyboard_event",
+        last_key.lock().unwrap().as_ref().is_some_and(|e| {
+          e.state == KeyState::Pressed && e.key == "a" && e.code == "KeyA"
+        }),
+      );
+
+      *last_key.lock().unwrap() = None;
+      let _ = laufey::test_inject_input(
+        input_id,
+        &TestInput::Modifiers {
+          modifiers: LAUFEY_MOD_SHIFT,
+        },
+      );
+      check(
+        "inject Shift modifiers emit keydown Shift/ShiftLeft",
+        last_key.lock().unwrap().as_ref().is_some_and(|e| {
+          e.state == KeyState::Pressed
+            && e.key == "Shift"
+            && e.code == "ShiftLeft"
+            && e.modifiers.shift
+        }),
+      );
+      *last_key.lock().unwrap() = None;
+      let _ = laufey::test_inject_input(
+        input_id,
+        &TestInput::Modifiers { modifiers: 0 },
+      );
+      check(
+        "inject Shift release emits keyup",
+        last_key.lock().unwrap().as_ref().is_some_and(|e| {
+          e.state == KeyState::Released
+            && e.key == "Shift"
+            && !e.modifiers.shift
+        }),
+      );
+    }
+    let _ = &input_win;
 
     // ---- A. direct state readback ---------------------------------------
     win.set_size(640, 480);

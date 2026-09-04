@@ -116,6 +116,33 @@ typedef void (*laufey_menu_click_fn)(void* user_data, uint32_t window_id,
 #define LAUFEY_MOUSE_PRESSED 0
 #define LAUFEY_MOUSE_RELEASED 1
 
+// Synthetic input kinds for test_inject_input (API >= 35).
+#define LAUFEY_TEST_INPUT_KEY 0
+#define LAUFEY_TEST_INPUT_MOUSE_MOVE 1
+#define LAUFEY_TEST_INPUT_MOUSE_BUTTON 2
+#define LAUFEY_TEST_INPUT_WHEEL 3
+#define LAUFEY_TEST_INPUT_CURSOR_ENTER 4
+#define LAUFEY_TEST_INPUT_CURSOR_LEAVE 5
+#define LAUFEY_TEST_INPUT_MODIFIERS 6
+
+// Test-only input record. Unused fields are ignored per `kind`. Wheel
+// deltas are DOM-signed (positive Y is scroll down); the winit backend
+// converts them through the same mapping a real OS event uses.
+typedef struct laufey_test_input {
+  int kind;            // LAUFEY_TEST_INPUT_*
+  uint32_t modifiers;  // bitmask of LAUFEY_MOD_*
+  const char* key;     // KEY
+  const char* code;    // KEY
+  bool pressed;        // KEY / MOUSE_BUTTON
+  bool repeat;         // KEY
+  int button;          // MOUSE_BUTTON: LAUFEY_MOUSE_BUTTON_*
+  double x;            // MOVE / BUTTON / WHEEL / ENTER / LEAVE
+  double y;
+  double delta_x;  // WHEEL
+  double delta_y;
+  int delta_mode;  // WHEEL: LAUFEY_WHEEL_DELTA_*
+} laufey_test_input_t;
+
 // Dialog types
 #define LAUFEY_DIALOG_ALERT 0
 #define LAUFEY_DIALOG_CONFIRM 1
@@ -860,6 +887,17 @@ struct laufey_backend_api {
   // callers must null-check and fall back to get_window_position.
   void (*get_window_inner_position)(void* backend_data, uint32_t window_id,
                                     int* x, int* y);
+
+  // --- Test input injection (API >= 35) --------------------------------------
+  //
+  // Test-only. Posts a synthetic input event through the same dispatch a
+  // real OS event uses for this backend (winit: WindowEvent handlers;
+  // CEF / WebView: Dispatch* after native translation). Returns true if
+  // the event was accepted (known kind; winit also requires a live
+  // window). NULL on backends that do not implement it; callers should
+  // treat NULL like the other test hooks.
+  bool (*test_inject_input)(void* backend_data, uint32_t window_id,
+                            const laufey_test_input_t* event);
 };
 
 #ifdef __cplusplus

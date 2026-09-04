@@ -574,7 +574,37 @@ pub struct LaufeyBackendApi {
   // --- Content-view origin (API >= 35) ---
   pub get_window_inner_position:
     Option<unsafe extern "C" fn(*mut c_void, u32, *mut c_int, *mut c_int)>,
+
+  // --- Test input injection (API >= 35) ---
+  pub test_inject_input: Option<
+    unsafe extern "C" fn(*mut c_void, u32, *const LaufeyTestInput) -> bool,
+  >,
 }
+
+/// Mirrors `laufey_test_input_t` in laufey.h.
+#[repr(C)]
+pub struct LaufeyTestInput {
+  pub kind: c_int,
+  pub modifiers: u32,
+  pub key: *const c_char,
+  pub code: *const c_char,
+  pub pressed: bool,
+  pub repeat: bool,
+  pub button: c_int,
+  pub x: f64,
+  pub y: f64,
+  pub delta_x: f64,
+  pub delta_y: f64,
+  pub delta_mode: c_int,
+}
+
+pub const LAUFEY_TEST_INPUT_KEY: c_int = 0;
+pub const LAUFEY_TEST_INPUT_MOUSE_MOVE: c_int = 1;
+pub const LAUFEY_TEST_INPUT_MOUSE_BUTTON: c_int = 2;
+pub const LAUFEY_TEST_INPUT_WHEEL: c_int = 3;
+pub const LAUFEY_TEST_INPUT_CURSOR_ENTER: c_int = 4;
+pub const LAUFEY_TEST_INPUT_CURSOR_LEAVE: c_int = 5;
+pub const LAUFEY_TEST_INPUT_MODIFIERS: c_int = 6;
 
 unsafe impl Send for LaufeyBackendApi {}
 
@@ -1220,6 +1250,8 @@ pub fn create_api_base() -> LaufeyBackendApi {
     get_window_scale_factor: None,
     // Content-view origin (API >= 35): filled by fill_common_api.
     get_window_inner_position: None,
+    // Test input injection (API >= 35): filled by fill_common_api.
+    test_inject_input: None,
   }
 }
 
@@ -1775,6 +1807,10 @@ pub struct WindowState {
   pub last_press_button: Mutex<Option<winit::event::MouseButton>>,
   pub last_press_position: Mutex<Option<(f64, f64)>>,
   pub click_count: Mutex<i32>,
+  /// Last modifiers applied by `test_inject_input`. Real
+  /// `ModifiersChanged` lives on the winit window map; the hook keeps its
+  /// own so a MODIFIERS event can emit the same edges.
+  pub inject_modifiers: Mutex<winit::event::Modifiers>,
   /// False until the creation-time `Resized` burst has been drained.
   ///
   /// Creating a window makes the OS emit several `Resized` events describing
@@ -1810,6 +1846,7 @@ impl WindowState {
       last_press_button: Mutex::new(None),
       last_press_position: Mutex::new(None),
       click_count: Mutex::new(0),
+      inject_modifiers: Mutex::new(winit::event::Modifiers::default()),
       resize_reporting_armed: Mutex::new(false),
     }
   }
@@ -2644,6 +2681,32 @@ macro_rules! define_common_backend_fns {
       $crate::dispatch_menu_click_by_id(&id)
     }
 
+    unsafe extern "C" fn backend_test_inject_input(
+      _data: *mut ::std::ffi::c_void,
+      window_id: u32,
+      event: *const $crate::LaufeyTestInput,
+    ) -> bool {
+      if event.is_null() {
+        return false;
+      }
+      let event = unsafe { &*event };
+      if let Some(state) = <$B as $crate::BackendAccess>::get() {
+        state
+          .common()
+          .with_window(window_id, |ws| {
+            $crate::inject_test_input(
+              &state.common().handlers,
+              ws,
+              window_id,
+              event,
+            )
+          })
+          .unwrap_or(false)
+      } else {
+        false
+      }
+    }
+
     unsafe extern "C" fn backend_set_application_menu(
       _data: *mut ::std::ffi::c_void,
       window_id: u32,
@@ -3080,6 +3143,7 @@ macro_rules! fill_common_api {
     $api.test_click_menu_item = Some(backend_test_click_menu_item);
     $api.test_trigger_close_requested =
       Some(backend_test_trigger_close_requested);
+    $api.test_inject_input = Some(backend_test_inject_input);
   };
 }
 
@@ -3822,6 +3886,26 @@ pub const LAUFEY_MOUSE_BUTTON_FORWARD: c_int = 4;
 pub const LAUFEY_MOUSE_PRESSED: c_int = 0;
 pub const LAUFEY_MOUSE_RELEASED: c_int = 1;
 
+/// Convert a LAUFEY modifier bitmask to winit's `ModifiersState`.
+pub fn laufey_to_modifiers_state(
+  flags: u32,
+) -> winit::keyboard::ModifiersState {
+  let mut s = winit::keyboard::ModifiersState::empty();
+  if flags & LAUFEY_MOD_SHIFT != 0 {
+    s |= winit::keyboard::ModifiersState::SHIFT;
+  }
+  if flags & LAUFEY_MOD_CONTROL != 0 {
+    s |= winit::keyboard::ModifiersState::CONTROL;
+  }
+  if flags & LAUFEY_MOD_ALT != 0 {
+    s |= winit::keyboard::ModifiersState::ALT;
+  }
+  if flags & LAUFEY_MOD_META != 0 {
+    s |= winit::keyboard::ModifiersState::SUPER;
+  }
+  s
+}
+
 /// Convert winit modifier state to LAUFEY modifier bitmask.
 pub fn modifiers_to_laufey(mods: winit::keyboard::ModifiersState) -> u32 {
   let mut flags = 0u32;
@@ -4252,6 +4336,136 @@ pub fn dispatch_wheel_event(
   }
 }
 
+fn c_str_or_empty(p: *const c_char) -> String {
+  if p.is_null() {
+    String::new()
+  } else {
+    unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
+  }
+}
+
+fn is_modifier_key_name(key: &str) -> bool {
+  matches!(key, "Shift" | "Control" | "Alt" | "AltGraph" | "Meta")
+}
+
+fn laufey_button_to_winit(button: c_int) -> Option<winit::event::MouseButton> {
+  match button {
+    LAUFEY_MOUSE_BUTTON_LEFT => Some(winit::event::MouseButton::Left),
+    LAUFEY_MOUSE_BUTTON_RIGHT => Some(winit::event::MouseButton::Right),
+    LAUFEY_MOUSE_BUTTON_MIDDLE => Some(winit::event::MouseButton::Middle),
+    LAUFEY_MOUSE_BUTTON_BACK => Some(winit::event::MouseButton::Back),
+    LAUFEY_MOUSE_BUTTON_FORWARD => Some(winit::event::MouseButton::Forward),
+    _ => None,
+  }
+}
+
+/// Drive the same dispatch a real `WindowEvent` uses. Wheel deltas in
+/// `event` are DOM-signed; they are inverted into winit's incoming space
+/// so `winit_scroll_to_dom` is actually exercised.
+pub fn inject_test_input(
+  handlers: &EventHandlers,
+  ws: &WindowState,
+  window_id: u32,
+  event: &LaufeyTestInput,
+) -> bool {
+  let mods = laufey_to_modifiers_state(event.modifiers);
+  match event.kind {
+    LAUFEY_TEST_INPUT_KEY => {
+      let key = c_str_or_empty(event.key);
+      if is_modifier_key_name(&key) {
+        // Real KeyboardInput for these is skipped; use MODIFIERS.
+        return false;
+      }
+      let code = c_str_or_empty(event.code);
+      dispatch_raw_keyboard_event(
+        handlers,
+        window_id,
+        event.pressed,
+        &key,
+        &code,
+        mods,
+        event.repeat,
+      );
+      true
+    }
+    LAUFEY_TEST_INPUT_MOUSE_MOVE => {
+      let flush_enter = ws.note_cursor_move(event.x, event.y);
+      if flush_enter {
+        dispatch_cursor_enter_leave_event(handlers, ws, window_id, true, mods);
+      }
+      dispatch_mouse_move_event(handlers, window_id, event.x, event.y, mods);
+      true
+    }
+    LAUFEY_TEST_INPUT_MOUSE_BUTTON => {
+      let Some(button) = laufey_button_to_winit(event.button) else {
+        return false;
+      };
+      let state = if event.pressed {
+        winit::event::ElementState::Pressed
+      } else {
+        winit::event::ElementState::Released
+      };
+      dispatch_mouse_click_event(handlers, ws, window_id, state, button, mods);
+      true
+    }
+    LAUFEY_TEST_INPUT_WHEEL => {
+      let scale = {
+        let s = *ws.current_scale.lock().unwrap();
+        if s > 0.0 {
+          s
+        } else {
+          1.0
+        }
+      };
+      // Invert the DOM sign so the real mapping brings it back.
+      let delta = if event.delta_mode == LAUFEY_WHEEL_DELTA_PIXEL {
+        winit::event::MouseScrollDelta::PixelDelta(PhysicalPosition::new(
+          event.delta_x * scale,
+          -event.delta_y * scale,
+        ))
+      } else {
+        winit::event::MouseScrollDelta::LineDelta(
+          event.delta_x as f32,
+          -event.delta_y as f32,
+        )
+      };
+      dispatch_wheel_event(handlers, ws, window_id, delta, mods, scale);
+      true
+    }
+    LAUFEY_TEST_INPUT_CURSOR_ENTER => {
+      if ws.note_cursor_entered() {
+        dispatch_cursor_enter_leave_event(handlers, ws, window_id, true, mods);
+      }
+      true
+    }
+    LAUFEY_TEST_INPUT_CURSOR_LEAVE => {
+      ws.note_cursor_left();
+      dispatch_cursor_enter_leave_event(handlers, ws, window_id, false, mods);
+      true
+    }
+    LAUFEY_TEST_INPUT_MODIFIERS => {
+      let next = winit::event::Modifiers::from(mods);
+      let prev = {
+        let mut slot = ws.inject_modifiers.lock().unwrap();
+        std::mem::replace(&mut *slot, next)
+      };
+      for (pressed, key, code) in modifier_key_edges(&prev, &next) {
+        dispatch_raw_keyboard_event(
+          handlers,
+          window_id,
+          pressed,
+          key,
+          code,
+          next.state(),
+          false,
+        );
+      }
+      true
+    }
+    _ => false,
+  }
+}
+
 pub fn dispatch_cursor_enter_leave_event(
   handlers: &EventHandlers,
   ws: &WindowState,
@@ -4591,6 +4805,14 @@ mod mouse_tests {
       ),
       1
     );
+  }
+
+  #[test]
+  fn laufey_mod_bits_round_trip_to_winit() {
+    let s = laufey_to_modifiers_state(LAUFEY_MOD_SHIFT | LAUFEY_MOD_META);
+    assert!(s.shift_key() && s.super_key());
+    assert!(!s.control_key() && !s.alt_key());
+    assert_eq!(modifiers_to_laufey(s), LAUFEY_MOD_SHIFT | LAUFEY_MOD_META);
   }
 
   #[test]
