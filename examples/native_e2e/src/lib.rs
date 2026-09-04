@@ -25,7 +25,7 @@
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Arc;
 
-use laufey::{MenuItem, TrayIcon, Window};
+use laufey::{MenuItem, TrayIcon, Window, WindowOptions};
 
 static FAILED: AtomicBool = AtomicBool::new(false);
 
@@ -52,6 +52,39 @@ fn check(name: &str, ok: bool) {
 /// Capability absent on this backend — informational, never fails the run.
 fn na(name: &str) {
   eprintln!("[e2e] N/A  {name}");
+}
+
+/// Decorated macOS / Windows chrome puts the content origin below (and
+/// usually a bit to the right of) the frame origin. Linux reports the
+/// compositor's frame as the content, so the two coincide.
+fn expect_title_bar_offset() -> bool {
+  cfg!(any(target_os = "macos", target_os = "windows"))
+}
+
+fn check_inner_vs_frame(
+  name: &str,
+  frame: (i32, i32),
+  inner: (i32, i32),
+  expect_chrome: bool,
+) {
+  if frame == (0, 0) && inner == (0, 0) {
+    na(&format!("{name} (window not placed yet)"));
+    return;
+  }
+  // Winit's get_position only reports a not-yet-applied set, so after
+  // realize the frame reads as (0, 0) while inner is the real content
+  // origin. That is a getter limitation, not a chrome-offset bug.
+  if frame == (0, 0) && inner != (0, 0) {
+    na(&format!("{name} (frame origin not readable)"));
+    return;
+  }
+  let dx = inner.0 - frame.0;
+  let dy = inner.1 - frame.1;
+  if expect_chrome {
+    check(name, dy > 0 && dx >= 0 && dy > dx);
+  } else {
+    check(name, dx == 0 && dy == 0);
+  }
 }
 
 async fn wait_for<F: Fn() -> bool>(f: F, attempts: u32, step_ms: u64) -> bool {
@@ -126,6 +159,44 @@ fn e2e_main() {
 
     check("window id is nonzero", win.id() != 0);
 
+    // Constructor-time getters must not wait for the OS window: JS can
+    // read them from the constructor, and the winit backend creates the
+    // NSWindow / HWND asynchronously. Seeded DPR used to stay 1.0 until
+    // the first Resized; inner position used to be the frame origin.
+    let early_scale = win.get_scale_factor();
+    check("early scale factor is positive", early_scale > 0.0);
+    let (early_w, early_h) = win.get_size();
+    check(
+      "constructor size is readable immediately",
+      (early_w - 800).abs() <= 2 && (early_h - 600).abs() <= 2,
+    );
+
+    let decorated = Window::new(400, 300).title("native-e2e-chrome");
+    decorated.set_position(240, 160);
+    check_inner_vs_frame(
+      "decorated inner is offset by the title bar",
+      decorated.get_position(),
+      decorated.get_inner_position(),
+      expect_title_bar_offset(),
+    );
+
+    let frameless = Window::new_with_options(
+      200,
+      150,
+      WindowOptions {
+        frameless: true,
+        ..WindowOptions::default()
+      },
+    )
+    .title("native-e2e-frameless");
+    frameless.set_position(300, 200);
+    check_inner_vs_frame(
+      "frameless inner matches the frame origin",
+      frameless.get_position(),
+      frameless.get_inner_position(),
+      false,
+    );
+
     // ---- race probe: native handle immediately after creation ------------
     // Regression guard for denoland/deno#35785. The winit/raw backend creates
     // the OS window asynchronously, so reading the handle *right now* — with no
@@ -147,6 +218,34 @@ fn e2e_main() {
 
     // Give the backend a moment to realize the window on screen.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let settled_scale = win.get_scale_factor();
+    check("scale factor is still positive after realize", settled_scale > 0.0);
+    check(
+      "scale factor is stable from the constructor",
+      (early_scale - settled_scale).abs() < 0.01,
+    );
+    let (settled_w, settled_h) = win.get_size();
+    check(
+      "constructor size survives realize",
+      (settled_w - 800).abs() <= 2 && (settled_h - 600).abs() <= 2,
+    );
+
+    // After realize, WebView / CEF can still compare inner vs frame from
+    // the live window. Winit's get_position only reflects a pending set,
+    // so a (0, 0) frame with a nonzero inner is N/A rather than a fail.
+    check_inner_vs_frame(
+      "settled decorated inner is offset by the title bar",
+      decorated.get_position(),
+      decorated.get_inner_position(),
+      expect_title_bar_offset(),
+    );
+    check_inner_vs_frame(
+      "settled frameless inner matches the frame origin",
+      frameless.get_position(),
+      frameless.get_inner_position(),
+      false,
+    );
 
     // ---- A. direct state readback ---------------------------------------
     win.set_size(640, 480);
